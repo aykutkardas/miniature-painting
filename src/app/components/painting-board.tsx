@@ -59,6 +59,24 @@ function PaintableModel(
   const redoStepCount = useRef<number>(1);
   const CLICK_TIMEOUT = 3000; // 3 seconds
 
+  // Center the model when it's loaded
+  useEffect(() => {
+    if (meshRef.current) {
+      const box = new THREE.Box3().setFromObject(meshRef.current);
+      const center = box.getCenter(new THREE.Vector3());
+      const size = box.getSize(new THREE.Vector3());
+
+      // Center the model
+      meshRef.current.position.x = -center.x;
+      meshRef.current.position.y = -center.y;
+      meshRef.current.position.z = -center.z;
+
+      // Adjust camera position based on model size
+      const maxDim = Math.max(size.x, size.y, size.z);
+      camera.position.z = maxDim * 2;
+    }
+  }, [scene, camera]);
+
   useEffect(() => {
     const size = 1024;
     const canvas = document.createElement("canvas");
@@ -470,6 +488,9 @@ export default function PaintingBoard() {
           enabled={isSpacePressed}
           enablePan={true}
           panSpeed={0.5}
+          target={[0, 0, 0]}
+          minDistance={1}
+          maxDistance={10}
         />
         <ExportHandler onExport={exportImage} />
       </Canvas>
