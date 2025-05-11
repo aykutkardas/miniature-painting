@@ -1,6 +1,13 @@
 "use client";
 
-import { useRef, useState, useEffect, Suspense } from "react";
+import {
+  useRef,
+  useState,
+  useEffect,
+  Suspense,
+  useImperativeHandle,
+  forwardRef,
+} from "react";
 import { Canvas, useThree } from "@react-three/fiber";
 import { OrbitControls, useGLTF } from "@react-three/drei";
 import { SketchPicker } from "react-color";
@@ -25,11 +32,10 @@ type PaintableModelProps = {
   brushRadius: number;
 };
 
-function PaintableModel({
-  url,
-  selectedColor,
-  brushRadius,
-}: PaintableModelProps) {
+function PaintableModel(
+  { url, selectedColor, brushRadius }: PaintableModelProps,
+  ref: React.ForwardedRef<{ undo: () => void; redo: () => void }>
+) {
   const { scene } = useGLTF(url) as unknown as GLTFResult;
   const meshRef = useRef<THREE.Group>(null);
   const { camera, gl } = useThree();
@@ -38,6 +44,13 @@ function PaintableModel({
   const painting = useRef(false);
   const history = useRef<string[]>([]);
   const redoStack = useRef<string[]>([]);
+
+  // Add step counter refs
+  const lastUndoTime = useRef<number>(0);
+  const lastRedoTime = useRef<number>(0);
+  const undoStepCount = useRef<number>(1);
+  const redoStepCount = useRef<number>(1);
+  const CLICK_TIMEOUT = 3000; // 3 seconds
 
   useEffect(() => {
     const size = 1024;
@@ -139,35 +152,99 @@ function PaintableModel({
 
   const undo = () => {
     if (!canvasRef.current || history.current.length === 0) return;
-    const dataUrl = history.current.pop();
-    if (!dataUrl) return;
-    redoStack.current.push(canvasRef.current.canvas.toDataURL());
-    const img = new Image();
-    img.onload = () => {
-      const { ctx, texture } = canvasRef.current!;
-      ctx.clearRect(0, 0, 1024, 1024);
-      ctx.drawImage(img, 0, 0);
-      texture.needsUpdate = true;
-      localStorage.setItem(STORAGE_KEY, canvasRef.current!.canvas.toDataURL());
-    };
-    img.src = dataUrl;
+
+    const now = Date.now();
+    if (now - lastUndoTime.current < CLICK_TIMEOUT) {
+      // Increase step count if clicked within timeout
+      undoStepCount.current += 2;
+    } else {
+      // Reset step count if timeout passed
+      undoStepCount.current = 1;
+    }
+    lastUndoTime.current = now;
+
+    // Perform multiple undos based on step count
+    for (let i = 0; i < undoStepCount.current; i++) {
+      if (history.current.length === 0) break;
+      const dataUrl = history.current.pop();
+      if (!dataUrl) break;
+      redoStack.current.push(canvasRef.current.canvas.toDataURL());
+      const img = new Image();
+      img.onload = () => {
+        const { ctx, texture } = canvasRef.current!;
+        ctx.clearRect(0, 0, 1024, 1024);
+        ctx.drawImage(img, 0, 0);
+        texture.needsUpdate = true;
+        localStorage.setItem(
+          STORAGE_KEY,
+          canvasRef.current!.canvas.toDataURL()
+        );
+      };
+      img.src = dataUrl;
+    }
   };
 
   const redo = () => {
     if (!canvasRef.current || redoStack.current.length === 0) return;
-    const dataUrl = redoStack.current.pop();
-    if (!dataUrl) return;
-    history.current.push(canvasRef.current.canvas.toDataURL());
-    const img = new Image();
-    img.onload = () => {
-      const { ctx, texture } = canvasRef.current!;
-      ctx.clearRect(0, 0, 1024, 1024);
-      ctx.drawImage(img, 0, 0);
-      texture.needsUpdate = true;
-      localStorage.setItem(STORAGE_KEY, canvasRef.current!.canvas.toDataURL());
-    };
-    img.src = dataUrl;
+
+    const now = Date.now();
+    if (now - lastRedoTime.current < CLICK_TIMEOUT) {
+      // Increase step count if clicked within timeout
+      redoStepCount.current += 2;
+    } else {
+      // Reset step count if timeout passed
+      redoStepCount.current = 1;
+    }
+    lastRedoTime.current = now;
+
+    // Perform multiple redos based on step count
+    for (let i = 0; i < redoStepCount.current; i++) {
+      if (redoStack.current.length === 0) break;
+      const dataUrl = redoStack.current.pop();
+      if (!dataUrl) break;
+      history.current.push(canvasRef.current.canvas.toDataURL());
+      const img = new Image();
+      img.onload = () => {
+        const { ctx, texture } = canvasRef.current!;
+        ctx.clearRect(0, 0, 1024, 1024);
+        ctx.drawImage(img, 0, 0);
+        texture.needsUpdate = true;
+        localStorage.setItem(
+          STORAGE_KEY,
+          canvasRef.current!.canvas.toDataURL()
+        );
+      };
+      img.src = dataUrl;
+    }
   };
+
+  // Reset step counts after timeout
+  useEffect(() => {
+    const resetUndoSteps = () => {
+      if (Date.now() - lastUndoTime.current >= CLICK_TIMEOUT) {
+        undoStepCount.current = 1;
+      }
+    };
+
+    const resetRedoSteps = () => {
+      if (Date.now() - lastRedoTime.current >= CLICK_TIMEOUT) {
+        redoStepCount.current = 1;
+      }
+    };
+
+    const interval = setInterval(() => {
+      resetUndoSteps();
+      resetRedoSteps();
+    }, 1000); // Check every second
+
+    return () => clearInterval(interval);
+  }, []);
+
+  // Expose undo/redo functions to parent component
+  useImperativeHandle(ref, () => ({
+    undo,
+    redo,
+  }));
 
   // Key bindings for undo/redo
   useEffect(() => {
@@ -197,10 +274,14 @@ function PaintableModel({
   );
 }
 
+// Create a forwardRef wrapper for PaintableModel
+const PaintableModelWithRef = forwardRef(PaintableModel);
+
 export default function PaintingBoard() {
   const [selectedColor, setSelectedColor] = useState<string>("#ff0000");
   const [brushRadius, setBrushRadius] = useState<number>(15);
   const [isAltPressed, setIsAltPressed] = useState(false);
+  const modelRef = useRef<{ undo: () => void; redo: () => void }>(null);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -220,12 +301,38 @@ export default function PaintingBoard() {
   return (
     <div className="relative" style={{ width: "100vw", height: "100vh" }}>
       <Canvas camera={{ position: [0, 0, 3], fov: 60 }}>
-        <ambientLight intensity={0.3} />
-        <directionalLight position={[5, 5, 5]} intensity={1} castShadow />
-        <pointLight position={[-3, -3, -3]} intensity={0.6} />
+        {/* Ambient light for base illumination */}
+        <ambientLight intensity={0.4} />
+
+        {/* Main directional lights from different angles */}
+        <directionalLight
+          position={[5, 5, 5]}
+          intensity={0.8}
+          castShadow
+          shadow-mapSize={[1024, 1024]}
+        />
+        <directionalLight
+          position={[-5, 5, -5]}
+          intensity={0.6}
+          castShadow
+          shadow-mapSize={[1024, 1024]}
+        />
+        <directionalLight
+          position={[0, -5, 0]}
+          intensity={0.4}
+          castShadow
+          shadow-mapSize={[1024, 1024]}
+        />
+
+        {/* Fill lights for better detail visibility */}
+        <pointLight position={[-3, -3, -3]} intensity={0.3} />
+        <pointLight position={[3, 3, 3]} intensity={0.3} />
+        <pointLight position={[0, 0, 5]} intensity={0.2} />
+
         <Suspense fallback={null}>
-          <PaintableModel
-            url="https://v3.fal.media/files/panda/PpIDlsfwmAMku_o_PMHxX_model.glb"
+          <PaintableModelWithRef
+            ref={modelRef}
+            url="https://v3.fal.media/files/zebra/s4aSZP8hsYSWzn9xwtv5-_model.glb"
             selectedColor={selectedColor}
             brushRadius={brushRadius}
           />
@@ -241,18 +348,8 @@ export default function PaintingBoard() {
         setSelectedColor={setSelectedColor}
         brushSize={brushRadius}
         setBrushSize={setBrushRadius}
-        onUndo={() => {
-          const undoButton = document.querySelector('[title="Undo"]');
-          if (undoButton) {
-            (undoButton as HTMLElement).click();
-          }
-        }}
-        onRedo={() => {
-          const redoButton = document.querySelector('[title="Redo"]');
-          if (redoButton) {
-            (redoButton as HTMLElement).click();
-          }
-        }}
+        onUndo={() => modelRef.current?.undo()}
+        onRedo={() => modelRef.current?.redo()}
       />
     </div>
   );
