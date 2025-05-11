@@ -2,7 +2,7 @@
 
 import type React from "react";
 
-import { useRef, useState } from "react";
+import { useRef, useState, useEffect } from "react";
 import {
   Circle,
   Eraser,
@@ -19,7 +19,6 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SketchPicker } from "react-color";
-import { darken, lighten } from "color2k";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -34,6 +33,13 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+
+const COLOR_STORAGE_KEY = "paint-color-history";
+
+interface ColorStorage {
+  selectedColor: string;
+  colorHistory: string[];
+}
 
 interface BottomBarProps {
   selectedColor: string;
@@ -55,6 +61,50 @@ export default function BottomBar({
   const [position, setPosition] = useState({ x: 100, y: 100 });
   const [isDragging, setIsDragging] = useState(false);
   const [selectedTool, setSelectedTool] = useState("pencil");
+  const [colorHistory, setColorHistory] = useState<string[]>([]);
+  const [tempColor, setTempColor] = useState(selectedColor);
+
+  // Load colors from localStorage on component mount
+  useEffect(() => {
+    const savedColors = localStorage.getItem(COLOR_STORAGE_KEY);
+    if (savedColors) {
+      try {
+        const { selectedColor: savedColor, colorHistory: savedHistory } =
+          JSON.parse(savedColors) as ColorStorage;
+        setSelectedColor(savedColor);
+        setColorHistory(savedHistory);
+        setTempColor(savedColor);
+      } catch (error) {
+        console.error("Error loading saved colors:", error);
+      }
+    }
+  }, []);
+
+  // Update color history when selectedColor changes
+  useEffect(() => {
+    setColorHistory((prev) => {
+      // Remove the color if it already exists in history
+      const filtered = prev.filter((color) => color !== selectedColor);
+      // Add new color to the beginning
+      const updated = [selectedColor, ...filtered];
+      // Keep only last 4 colors
+      return updated.slice(0, 4);
+    });
+  }, [selectedColor]);
+
+  // Save colors to localStorage whenever they change
+  useEffect(() => {
+    const colorStorage: ColorStorage = {
+      selectedColor,
+      colorHistory,
+    };
+    localStorage.setItem(COLOR_STORAGE_KEY, JSON.stringify(colorStorage));
+  }, [selectedColor, colorHistory]);
+
+  // Update tempColor when selectedColor changes
+  useEffect(() => {
+    setTempColor(selectedColor);
+  }, [selectedColor]);
 
   const dragRef = useRef<{
     startX: number;
@@ -93,10 +143,6 @@ export default function BottomBar({
   const handleMouseUp = () => {
     setIsDragging(false);
   };
-
-  // Generate shades of the selected color
-  const darkerShade = darken(selectedColor, 0.2);
-  const lighterShade = lighten(selectedColor, 0.2);
 
   return (
     <div
@@ -198,27 +244,36 @@ export default function BottomBar({
               </PopoverTrigger>
               <PopoverContent className="w-auto p-2" align="end">
                 <SketchPicker
-                  color={selectedColor}
-                  onChange={(color) => setSelectedColor(color.hex)}
+                  disableAlpha
+                  color={tempColor}
+                  onChange={(color) => setTempColor(color.hex)}
+                  onChangeComplete={(color) => {
+                    setSelectedColor(color.hex);
+                  }}
                 />
               </PopoverContent>
             </Popover>
             <div className="flex items-center gap-1">
-              <div
-                className="h-4 w-4 rounded-full border border-gray-300 cursor-pointer"
-                style={{ backgroundColor: darkerShade }}
-                onClick={() => setSelectedColor(darkerShade)}
-              />
-              <div
-                className="h-4 w-4 rounded-full border border-gray-300 cursor-pointer"
-                style={{ backgroundColor: selectedColor }}
-                onClick={() => setSelectedColor(selectedColor)}
-              />
-              <div
-                className="h-4 w-4 rounded-full border border-gray-300 cursor-pointer"
-                style={{ backgroundColor: lighterShade }}
-                onClick={() => setSelectedColor(lighterShade)}
-              />
+              {colorHistory.slice(1).map((color, index) => (
+                <div
+                  key={index}
+                  className={cn(
+                    "h-4 w-4 rounded-full border border-gray-300 cursor-pointer",
+                    selectedColor === color &&
+                      "ring-1 ring-offset-1 ring-black dark:ring-white"
+                  )}
+                  style={{ backgroundColor: color }}
+                  onClick={() => setSelectedColor(color)}
+                />
+              ))}
+              {Array.from({ length: 4 - colorHistory.length }).map(
+                (_, index) => (
+                  <div
+                    key={index}
+                    className="h-4 w-4 rounded-full border bg-neutral-300 border-gray-300 cursor-pointer"
+                  />
+                )
+              )}
             </div>
           </div>
         </div>
