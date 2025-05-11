@@ -13,7 +13,8 @@ import { OrbitControls, useGLTF } from "@react-three/drei";
 import { SketchPicker } from "react-color";
 import * as THREE from "three";
 import BottomBar from "./bottom-bar";
-const STORAGE_KEY = "paint-canvas";
+export const STORAGE_KEY = "paint-canvas";
+export const COLOR_STORAGE_KEY = "paint-color";
 
 type GLTFResult = {
   scene: THREE.Group;
@@ -30,17 +31,24 @@ type PaintableModelProps = {
   url: string;
   selectedColor: string;
   brushRadius: number;
+  isSpacePressed: boolean;
+  canvasRef: React.RefObject<CanvasRefType | null>;
 };
 
 function PaintableModel(
-  { url, selectedColor, brushRadius }: PaintableModelProps,
+  {
+    url,
+    selectedColor,
+    brushRadius,
+    isSpacePressed,
+    canvasRef,
+  }: PaintableModelProps,
   ref: React.ForwardedRef<{ undo: () => void; redo: () => void }>
 ) {
   const { scene } = useGLTF(url) as unknown as GLTFResult;
   const meshRef = useRef<THREE.Group>(null);
   const { camera, gl } = useThree();
   const [texture, setTexture] = useState<THREE.CanvasTexture | null>(null);
-  const canvasRef = useRef<CanvasRefType | null>(null);
   const painting = useRef(false);
   const history = useRef<string[]>([]);
   const redoStack = useRef<string[]>([]);
@@ -92,7 +100,7 @@ function PaintableModel(
           mesh.material = new THREE.MeshStandardMaterial({
             color: "white",
             map: texture,
-            roughness: 0.4,
+            roughness: 0.2,
             metalness: 0.0,
           });
         }
@@ -109,7 +117,7 @@ function PaintableModel(
   const paintAt = (event: THREE.Event & PointerEvent) => {
     if (
       !painting.current ||
-      event.altKey ||
+      isSpacePressed ||
       !canvasRef.current ||
       !meshRef.current
     )
@@ -246,21 +254,11 @@ function PaintableModel(
     redo,
   }));
 
-  // Key bindings for undo/redo
-  useEffect(() => {
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.key === "z") undo();
-      if (e.ctrlKey && e.key === "y") redo();
-    };
-    window.addEventListener("keydown", handleKey);
-    return () => window.removeEventListener("keydown", handleKey);
-  }, []);
-
   return (
     <group
       ref={meshRef}
       onPointerDown={(e) => {
-        if (!e.altKey) {
+        if (!isSpacePressed) {
           painting.current = true;
           paintAt(e as unknown as PointerEvent);
         }
@@ -277,30 +275,158 @@ function PaintableModel(
 // Create a forwardRef wrapper for PaintableModel
 const PaintableModelWithRef = forwardRef(PaintableModel);
 
+function ExportHandler({
+  onExport,
+}: {
+  onExport: (
+    renderer: THREE.WebGLRenderer,
+    scene: THREE.Scene,
+    camera: THREE.Camera
+  ) => void;
+}) {
+  const { gl, scene, camera } = useThree();
+
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "s") {
+        e.preventDefault();
+        onExport(gl, scene, camera);
+      }
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [gl, scene, camera, onExport]);
+
+  return null;
+}
+
 export default function PaintingBoard() {
   const [selectedColor, setSelectedColor] = useState<string>("#ff0000");
-  const [brushRadius, setBrushRadius] = useState<number>(15);
-  const [isAltPressed, setIsAltPressed] = useState(false);
+  const [brushRadius, setBrushRadius] = useState<number>(8);
+  const [isSpacePressed, setIsSpacePressed] = useState(false);
+  const [modelUrl, setModelUrl] = useState<string>(
+    "https://v3.fal.media/files/panda/BUZ_xt9BFOVvsX6dP3QFW_model.glb"
+  );
   const modelRef = useRef<{ undo: () => void; redo: () => void }>(null);
+  const controlsRef = useRef<any>(null);
+  const canvasRef = useRef<CanvasRefType | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
+
+  // Add cursor style based on mode and brush size
+  useEffect(() => {
+    const cursorStyle = isSpacePressed
+      ? "default"
+      : `url("data:image/svg+xml,%3Csvg width='${brushRadius * 2}' height='${
+          brushRadius * 2
+        }' viewBox='0 0 ${brushRadius * 2} ${
+          brushRadius * 2
+        }' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Ccircle cx='${brushRadius}' cy='${brushRadius}' r='${
+          brushRadius - 1
+        }' stroke='white' stroke-width='1' fill='none'/%3E%3C/svg%3E") ${brushRadius} ${brushRadius}, auto`;
+
+    document.body.style.cursor = cursorStyle;
+
+    return () => {
+      document.body.style.cursor = "default";
+    };
+  }, [isSpacePressed, brushRadius]);
+
+  const resetCamera = () => {
+    if (controlsRef.current) {
+      controlsRef.current.reset();
+    }
+  };
+
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (!isSpacePressed) {
+        if ((e.metaKey || e.ctrlKey) && e.key === "z") {
+          e.preventDefault();
+          if (e.shiftKey) {
+            modelRef.current?.redo();
+          } else {
+            modelRef.current?.undo();
+          }
+        } else if ((e.metaKey || e.ctrlKey) && e.key === "y") {
+          e.preventDefault();
+          modelRef.current?.redo();
+        }
+      }
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [isSpacePressed, modelRef]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.altKey) setIsAltPressed(true);
-    };
-    const handleKeyUp = (e: KeyboardEvent) => {
-      if (!e.altKey) setIsAltPressed(false);
+      if (e.code === "Space") {
+        e.preventDefault(); // Prevent page scroll
+        setIsSpacePressed((prev) => !prev); // Toggle the state
+      }
     };
     window.addEventListener("keydown", handleKeyDown);
-    window.addEventListener("keyup", handleKeyUp);
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
-      window.removeEventListener("keyup", handleKeyUp);
     };
   }, []);
 
+  const handleFileImport = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    // Reset the canvas and storage
+    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(COLOR_STORAGE_KEY);
+
+    // Create a URL for the file
+    const fileUrl = URL.createObjectURL(file);
+    setModelUrl(fileUrl);
+
+    // Reset camera position
+    if (controlsRef.current) {
+      controlsRef.current.reset();
+    }
+  };
+
+  const exportImage = (
+    renderer: THREE.WebGLRenderer,
+    scene: THREE.Scene,
+    camera: THREE.Camera
+  ) => {
+    // Render the scene
+    renderer.render(scene, camera);
+
+    // Get the image data
+    const imageData = renderer.domElement.toDataURL("image/png");
+
+    // Create download link
+    const link = document.createElement("a");
+    link.href = imageData;
+    link.download = `miniature-painting-${new Date()
+      .toISOString()
+      .slice(0, 19)
+      .replace(/:/g, "-")}.png`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   return (
     <div className="relative" style={{ width: "100vw", height: "100vh" }}>
-      <Canvas camera={{ position: [0, 0, 3], fov: 60 }}>
+      <input
+        type="file"
+        ref={fileInputRef}
+        onChange={handleFileImport}
+        accept=".glb"
+        className="hidden"
+      />
+      <Canvas
+        camera={{ position: [0, 0, 3], fov: 60 }}
+        onCreated={({ gl }) => {
+          rendererRef.current = gl;
+        }}
+      >
         {/* Ambient light for base illumination */}
         <ambientLight intensity={0.4} />
 
@@ -332,16 +458,21 @@ export default function PaintingBoard() {
         <Suspense fallback={null}>
           <PaintableModelWithRef
             ref={modelRef}
-            url="https://v3.fal.media/files/zebra/s4aSZP8hsYSWzn9xwtv5-_model.glb"
+            url={modelUrl}
             selectedColor={selectedColor}
             brushRadius={brushRadius}
+            isSpacePressed={isSpacePressed}
+            canvasRef={canvasRef}
           />
         </Suspense>
         <OrbitControls
+          ref={controlsRef}
           enableZoom={true}
-          enabled={isAltPressed}
-          enablePan={false}
+          enabled={isSpacePressed}
+          enablePan={true}
+          panSpeed={0.5}
         />
+        <ExportHandler onExport={exportImage} />
       </Canvas>
       <BottomBar
         selectedColor={selectedColor}
@@ -350,6 +481,17 @@ export default function PaintingBoard() {
         setBrushSize={setBrushRadius}
         onUndo={() => modelRef.current?.undo()}
         onRedo={() => modelRef.current?.redo()}
+        isSpacePressed={isSpacePressed}
+        setIsSpacePressed={setIsSpacePressed}
+        onResetCamera={resetCamera}
+        onExportImage={() => {
+          const event = new KeyboardEvent("keydown", {
+            key: "s",
+            metaKey: true,
+          });
+          window.dispatchEvent(event);
+        }}
+        onImportModel={() => fileInputRef.current?.click()}
       />
     </div>
   );
