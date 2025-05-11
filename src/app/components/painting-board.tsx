@@ -10,7 +10,6 @@ import {
 } from "react";
 import { Canvas, useThree } from "@react-three/fiber";
 import { OrbitControls, useGLTF } from "@react-three/drei";
-import { SketchPicker } from "react-color";
 import * as THREE from "three";
 import BottomBar from "./bottom-bar";
 export const STORAGE_KEY = "paint-canvas";

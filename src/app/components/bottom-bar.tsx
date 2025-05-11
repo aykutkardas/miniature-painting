@@ -12,9 +12,7 @@ import {
   Brush,
   Trash,
   RotateCcw,
-  Download,
   Camera,
-  Upload,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SketchPicker } from "react-color";
@@ -66,7 +64,6 @@ export default function BottomBar({
   setIsSpacePressed,
   onResetCamera,
   onExportImage,
-  onImportModel,
 }: BottomBarProps) {
   const [position, setPosition] = useState({ x: 100, y: 100 });
   const [isDragging, setIsDragging] = useState(false);

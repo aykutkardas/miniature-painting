@@ -1,5 +1,5 @@
 import PaintingBoard from "./components/painting-board";
-import { Github, Twitter, X } from "lucide-react";
+import { Github } from "lucide-react";
 
 export default function Home() {
   return (
