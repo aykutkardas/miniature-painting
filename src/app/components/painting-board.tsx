@@ -185,10 +185,10 @@ function PaintableModel({
       onPointerDown={(e) => {
         if (!e.altKey) {
           painting.current = true;
-          paintAt(e);
+          paintAt(e as unknown as PointerEvent);
         }
       }}
-      onPointerMove={(e) => handlePointerMove(e)}
+      onPointerMove={(e) => handlePointerMove(e as unknown as PointerEvent)}
       onPointerUp={() => (painting.current = false)}
       onPointerLeave={() => (painting.current = false)}
     >
