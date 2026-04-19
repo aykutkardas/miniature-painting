@@ -21,6 +21,8 @@ import {
   Plus as PlusIcon,
   Trash,
   GripVertical,
+  Sun,
+  Layers,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SketchPicker } from "react-color";
@@ -37,7 +39,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { STORAGE_KEY } from "./painting-board";
+import { STORAGE_KEY, type LightingConfig, type MaterialConfig } from "./painting-board";
 
 export const COLOR_STORAGE_KEY = "paint-color-history";
 
@@ -70,6 +72,10 @@ interface SidebarProps {
   activeLayerId: string;
   onLayersChange: (layers: Layer[]) => void;
   onActiveLayerChange: (id: string) => void;
+  lightingConfig: LightingConfig;
+  onLightingChange: (config: LightingConfig) => void;
+  materialConfig: MaterialConfig;
+  onMaterialChange: (config: MaterialConfig) => void;
 }
 
 // ─── Section header ───────────────────────────────────────────────────────────
@@ -169,6 +175,10 @@ export default function Sidebar({
   activeLayerId,
   onLayersChange,
   onActiveLayerChange,
+  lightingConfig,
+  onLightingChange,
+  materialConfig,
+  onMaterialChange,
 }: SidebarProps) {
   const [colorHistory, setColorHistory] = useState<string[]>([]);
   const [tempColor, setTempColor] = useState(selectedColor);
@@ -308,6 +318,89 @@ export default function Sidebar({
                 <Plus className="h-3 w-3 text-white/25 flex-shrink-0" />
               </div>
             </div>
+          </div>
+        </Section>
+
+        {/* ── Lighting ──────────────────────────────────────────────────────── */}
+        <Section label="Lighting" defaultOpen={false}>
+          <div className="px-3 flex flex-col gap-2">
+            {(
+              [
+                { key: "ambientIntensity", label: "Ambient" },
+                { key: "keyIntensity",     label: "Key"     },
+                { key: "fillIntensity",    label: "Fill"    },
+                { key: "rimIntensity",     label: "Rim"     },
+              ] as { key: keyof LightingConfig; label: string }[]
+            ).map(({ key, label }) => (
+              <div key={key} className="flex flex-col gap-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] text-white/30 flex items-center gap-1">
+                    <Sun className="h-2.5 w-2.5" />
+                    {label}
+                  </span>
+                  <span className="text-[10px] font-mono text-white/40">
+                    {lightingConfig[key].toFixed(1)}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Minus className="h-3 w-3 text-white/20 flex-shrink-0" />
+                  <Slider
+                    value={[lightingConfig[key]]}
+                    min={0}
+                    max={2}
+                    step={0.05}
+                    onValueChange={(v) =>
+                      onLightingChange({ ...lightingConfig, [key]: v[0] })
+                    }
+                    className="flex-1"
+                  />
+                  <Plus className="h-3 w-3 text-white/20 flex-shrink-0" />
+                </div>
+              </div>
+            ))}
+          </div>
+        </Section>
+
+        {/* ── Material ──────────────────────────────────────────────────────── */}
+        <Section label="Material" defaultOpen={false}>
+          <div className="px-3 flex flex-col gap-2">
+            {(
+              [
+                { key: "roughness", label: "Roughness", min: 0, max: 1, step: 0.01 },
+                { key: "metalness", label: "Metalness", min: 0, max: 1, step: 0.01 },
+              ] as { key: keyof MaterialConfig; label: string; min: number; max: number; step: number }[]
+            ).map(({ key, label, min, max, step }) => (
+              <div key={key} className="flex flex-col gap-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] text-white/30 flex items-center gap-1">
+                    <Layers className="h-2.5 w-2.5" />
+                    {label}
+                  </span>
+                  <span className="text-[10px] font-mono text-white/40">
+                    {materialConfig[key].toFixed(2)}
+                  </span>
+                </div>
+                {/* Visual bar showing matte ↔ gloss or non-metal ↔ metal */}
+                <div className="flex items-center gap-2">
+                  <Minus className="h-3 w-3 text-white/20 flex-shrink-0" />
+                  <Slider
+                    value={[materialConfig[key]]}
+                    min={min}
+                    max={max}
+                    step={step}
+                    onValueChange={(v) =>
+                      onMaterialChange({ ...materialConfig, [key]: v[0] })
+                    }
+                    className="flex-1"
+                  />
+                  <Plus className="h-3 w-3 text-white/20 flex-shrink-0" />
+                </div>
+                <div className="flex justify-between text-[9px] text-white/15 mt-0.5">
+                  <span>{key === "roughness" ? "Gloss" : "Non-metal"}</span>
+                  <span>{key === "roughness" ? "Matte" : "Metal"}</span>
+                </div>
+              </div>
+            ))}
           </div>
         </Section>
 

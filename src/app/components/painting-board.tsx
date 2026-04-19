@@ -28,6 +28,18 @@ type CanvasRefType = {
   texture: THREE.CanvasTexture;
 };
 
+type LightingConfig = {
+  ambientIntensity: number;
+  keyIntensity: number;
+  fillIntensity: number;
+  rimIntensity: number;
+};
+
+type MaterialConfig = {
+  roughness: number;
+  metalness: number;
+};
+
 type PaintableModelProps = {
   url: string;
   selectedColor: string;
@@ -37,7 +49,10 @@ type PaintableModelProps = {
   layerLocked: boolean;
   layerVisible: boolean;
   modelScaleRef: React.RefObject<number>;
+  materialConfig: MaterialConfig;
 };
+
+export type { LightingConfig, MaterialConfig };
 
 // Throttle localStorage writes: save at most once every 500 ms while painting.
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -59,6 +74,7 @@ function PaintableModel(
     layerLocked,
     layerVisible,
     modelScaleRef,
+    materialConfig,
   }: PaintableModelProps,
   ref: React.ForwardedRef<{ undo: () => void; redo: () => void }>
 ) {
@@ -123,7 +139,7 @@ function PaintableModel(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Apply texture to all meshes; dispose the old material to prevent GPU leaks.
+  // Apply texture + material config to all meshes; dispose old materials to prevent GPU leaks.
   useEffect(() => {
     if (!texture || !meshRef.current) return;
 
@@ -146,12 +162,12 @@ function PaintableModel(
         mesh.material = new THREE.MeshStandardMaterial({
           color: "white",
           map: texture,
-          roughness: 0.2,
-          metalness: 0.0,
+          roughness: materialConfig.roughness,
+          metalness: materialConfig.metalness,
         });
       }
     });
-  }, [texture]);
+  }, [texture, materialConfig]);
 
   // Capture a snapshot at the START of a stroke (pointerdown), not per pixel.
   const captureStrokeStart = useCallback(() => {
@@ -305,6 +321,16 @@ export default function PaintingBoard() {
     { id: "layer-base", name: "Base Layer", visible: true, locked: false, color: "#ff0000" },
   ]);
   const [activeLayerId, setActiveLayerId] = useState<string>("layer-base");
+  const [lightingConfig, setLightingConfig] = useState<LightingConfig>({
+    ambientIntensity: 0.7,
+    keyIntensity: 0.8,
+    fillIntensity: 0.6,
+    rimIntensity: 0.4,
+  });
+  const [materialConfig, setMaterialConfig] = useState<MaterialConfig>({
+    roughness: 0.7,
+    metalness: 0.0,
+  });
   const [modelUrl, setModelUrl] = useState<string>("https://v3b.fal.media/files/b/0a96e030/OHi5fn45b9ZKx5KPpsv31_model.glb" ||
     "https://v3.fal.media/files/panda/BUZ_xt9BFOVvsX6dP3QFW_model.glb"
   );
@@ -436,7 +462,11 @@ export default function PaintingBoard() {
   }, []);
 
   return (
-    <div className="relative" style={{ width: "calc(100vw - 220px)", height: "100vh" }}>
+    <div
+      className="relative"
+      style={{ width: "calc(100vw - 220px)", height: "100vh" }}
+      onContextMenu={(e) => e.preventDefault()}
+    >
       <input
         type="file"
         ref={fileInputRef}
@@ -453,30 +483,24 @@ export default function PaintingBoard() {
           gl.setClearColor(0x000000, 0);
         }}
       >
-        <ambientLight intensity={0.7} />
+        {/* Ambient fill */}
+        <ambientLight intensity={lightingConfig.ambientIntensity} />
 
+        {/* Key light — front-top-right */}
         <directionalLight
           position={[5, 5, 5]}
-          intensity={0.8}
-          castShadow
-          shadow-mapSize={[1024, 1024]}
+          intensity={lightingConfig.keyIntensity}
         />
+        {/* Fill light — front-top-left */}
         <directionalLight
-          position={[-5, 5, -5]}
-          intensity={0.6}
-          castShadow
-          shadow-mapSize={[1024, 1024]}
+          position={[-5, 3, 3]}
+          intensity={lightingConfig.fillIntensity}
         />
+        {/* Rim / back light */}
         <directionalLight
-          position={[0, -5, 0]}
-          intensity={0.4}
-          castShadow
-          shadow-mapSize={[1024, 1024]}
+          position={[0, 2, -6]}
+          intensity={lightingConfig.rimIntensity}
         />
-
-        <pointLight position={[-3, -3, -3]} intensity={0.3} />
-        <pointLight position={[3, 3, 3]} intensity={0.3} />
-        <pointLight position={[0, 0, 5]} intensity={0.2} />
 
         <Suspense fallback={null}>
           <PaintableModelWithRef
@@ -489,6 +513,7 @@ export default function PaintingBoard() {
             layerLocked={layers.find((l) => l.id === activeLayerId)?.locked ?? false}
             layerVisible={layers.find((l) => l.id === activeLayerId)?.visible ?? true}
             modelScaleRef={modelScaleRef}
+            materialConfig={materialConfig}
           />
         </Suspense>
         <OrbitControls
@@ -526,6 +551,10 @@ export default function PaintingBoard() {
           const layer = layers.find((l) => l.id === id);
           if (layer) setSelectedColor(layer.color);
         }}
+        lightingConfig={lightingConfig}
+        onLightingChange={setLightingConfig}
+        materialConfig={materialConfig}
+        onMaterialChange={setMaterialConfig}
       />
     </div>
   );
