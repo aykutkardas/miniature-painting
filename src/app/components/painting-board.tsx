@@ -65,14 +65,18 @@ export function recomposite(layers: Layer[]) {
   compositeTexture.needsUpdate = true;
 }
 
-/** Throttle recomposite calls during active painting strokes. */
-let recompositeTimer: ReturnType<typeof setTimeout> | null = null;
+/** Schedule a recomposite via rAF — at most one per frame, no stale-closure risk. */
+let rafPending = false;
+let pendingLayers: Layer[] | null = null;
 export function scheduleRecomposite(layers: Layer[]) {
-  if (recompositeTimer !== null) clearTimeout(recompositeTimer);
-  recompositeTimer = setTimeout(() => {
-    recomposite(layers);
-    recompositeTimer = null;
-  }, 16); // ~60 fps cap
+  pendingLayers = layers;
+  if (rafPending) return;
+  rafPending = true;
+  requestAnimationFrame(() => {
+    if (pendingLayers) recomposite(pendingLayers);
+    rafPending = false;
+    pendingLayers = null;
+  });
 }
 
 // ─── Ensure a layer canvas exists ────────────────────────────────────────────
@@ -96,7 +100,7 @@ type PaintableModelProps = {
   layerLocked: boolean;
   layerVisible: boolean;
   activeLayerId: string;
-  layers: Layer[];
+  layersRef: React.RefObject<Layer[]>;
   modelScaleRef: React.RefObject<number>;
   materialConfig: MaterialConfig;
   onTextureReady: (tex: THREE.CanvasTexture) => void;
@@ -111,7 +115,7 @@ function PaintableModel(
     layerLocked,
     layerVisible,
     activeLayerId,
-    layers,
+    layersRef,
     modelScaleRef,
     materialConfig,
     onTextureReady,
@@ -141,8 +145,8 @@ function PaintableModel(
       compositeTexture = new THREE.CanvasTexture(compositeCanvas);
     }
     // Ensure the initial base layer canvas exists.
-    layers.forEach((l) => ensureLayerCanvas(l.id));
-    recomposite(layers);
+    layersRef.current?.forEach((l) => ensureLayerCanvas(l.id));
+    recomposite(layersRef.current ?? []);
     setTexture(compositeTexture);
     onTextureReady(compositeTexture);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -206,9 +210,10 @@ function PaintableModel(
       lc.ctx.beginPath();
       lc.ctx.arc(x, y, Math.max(1, brushRadius), 0, Math.PI * 2);
       lc.ctx.fill();
-      scheduleRecomposite(layers);
+      // Use ref so this callback is never recreated just because layers changed.
+      scheduleRecomposite(layersRef.current ?? []);
     },
-    [isSpacePressed, layerLocked, layerVisible, activeLayerId, brushRadius, selectedColor, layers]
+    [isSpacePressed, layerLocked, layerVisible, activeLayerId, brushRadius, selectedColor, layersRef]
   );
 
   const restoreLayerFromDataUrl = useCallback(
@@ -219,11 +224,11 @@ function PaintableModel(
       img.onload = () => {
         lc.ctx.clearRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
         lc.ctx.drawImage(img, 0, 0);
-        recomposite(layers);
+        recomposite(layersRef.current ?? []);
       };
       img.src = dataUrl;
     },
-    [layers]
+    [layersRef]
   );
 
   const clearLayerCanvas = useCallback(
@@ -231,9 +236,9 @@ function PaintableModel(
       const lc = layerCanvases.get(layerId);
       if (!lc) return;
       lc.ctx.clearRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
-      recomposite(layers);
+      recomposite(layersRef.current ?? []);
     },
-    [layers]
+    [layersRef]
   );
 
   const undo = useCallback(() => {
@@ -346,6 +351,9 @@ export default function PaintingBoard() {
   const modelRef = useRef<{ undo: () => void; redo: () => void; clearLayerCanvas: (id: string) => void }>(null);
   const controlsRef = useRef<any>(null);
   const modelScaleRef = useRef<number>(1);
+  // Always-current ref so paintAt callbacks never need to be recreated on layer change.
+  const layersRef = useRef<Layer[]>(layers);
+  useEffect(() => { layersRef.current = layers; }, [layers]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const objectUrlRef = useRef<string | null>(null);
@@ -482,7 +490,7 @@ export default function PaintingBoard() {
             layerLocked={layers.find((l) => l.id === activeLayerId)?.locked ?? false}
             layerVisible={layers.find((l) => l.id === activeLayerId)?.visible ?? true}
             activeLayerId={activeLayerId}
-            layers={layers}
+            layersRef={layersRef}
             modelScaleRef={modelScaleRef}
             materialConfig={materialConfig}
             onTextureReady={() => {}}
