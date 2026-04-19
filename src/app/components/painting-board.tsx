@@ -17,52 +17,90 @@ import Sidebar, { type Layer } from "./sidebar";
 export const STORAGE_KEY = "paint-canvas";
 export const COLOR_STORAGE_KEY = "paint-color";
 
+const CANVAS_SIZE = 1024;
+
 type GLTFResult = {
   scene: THREE.Group;
   nodes: { [key: string]: THREE.Mesh };
 };
 
-type CanvasRefType = {
-  canvas: HTMLCanvasElement;
-  ctx: CanvasRenderingContext2D;
-  texture: THREE.CanvasTexture;
-};
-
-type LightingConfig = {
+export type LightingConfig = {
   ambientIntensity: number;
   keyIntensity: number;
   fillIntensity: number;
   rimIntensity: number;
 };
 
-type MaterialConfig = {
+export type MaterialConfig = {
   roughness: number;
   metalness: number;
 };
 
+// ─── Per-layer canvas storage ─────────────────────────────────────────────────
+// Keyed by layer id. Lives outside React so it is shared between
+// PaintableModel (painter) and PaintingBoard (compositor).
+export const layerCanvases = new Map<
+  string,
+  { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D }
+>();
+
+// Output composite canvas fed into the Three.js texture.
+let compositeCanvas: HTMLCanvasElement | null = null;
+let compositeCtx: CanvasRenderingContext2D | null = null;
+let compositeTexture: THREE.CanvasTexture | null = null;
+
+/** Flatten all visible layers onto compositeCanvas and mark the texture dirty. */
+export function recomposite(layers: Layer[]) {
+  if (!compositeCtx || !compositeCanvas || !compositeTexture) return;
+  const w = compositeCanvas.width;
+  const h = compositeCanvas.height;
+  // Start with white base
+  compositeCtx.fillStyle = "#ffffff";
+  compositeCtx.fillRect(0, 0, w, h);
+  for (const layer of layers) {
+    if (!layer.visible) continue;
+    const lc = layerCanvases.get(layer.id);
+    if (lc) compositeCtx.drawImage(lc.canvas, 0, 0);
+  }
+  compositeTexture.needsUpdate = true;
+}
+
+/** Throttle recomposite calls during active painting strokes. */
+let recompositeTimer: ReturnType<typeof setTimeout> | null = null;
+export function scheduleRecomposite(layers: Layer[]) {
+  if (recompositeTimer !== null) clearTimeout(recompositeTimer);
+  recompositeTimer = setTimeout(() => {
+    recomposite(layers);
+    recompositeTimer = null;
+  }, 16); // ~60 fps cap
+}
+
+// ─── Ensure a layer canvas exists ────────────────────────────────────────────
+function ensureLayerCanvas(layerId: string) {
+  if (layerCanvases.has(layerId)) return layerCanvases.get(layerId)!;
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = CANVAS_SIZE;
+  const ctx = canvas.getContext("2d")!;
+  // Transparent by default
+  ctx.clearRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+  layerCanvases.set(layerId, { canvas, ctx });
+  return { canvas, ctx };
+}
+
+// ─── PaintableModel ───────────────────────────────────────────────────────────
 type PaintableModelProps = {
   url: string;
   selectedColor: string;
   brushRadius: number;
   isSpacePressed: boolean;
-  canvasRef: React.RefObject<CanvasRefType | null>;
   layerLocked: boolean;
   layerVisible: boolean;
+  activeLayerId: string;
+  layers: Layer[];
   modelScaleRef: React.RefObject<number>;
   materialConfig: MaterialConfig;
+  onTextureReady: (tex: THREE.CanvasTexture) => void;
 };
-
-export type { LightingConfig, MaterialConfig };
-
-// Throttle localStorage writes: save at most once every 500 ms while painting.
-let saveTimer: ReturnType<typeof setTimeout> | null = null;
-function scheduleSave(dataUrl: string) {
-  if (saveTimer !== null) return;
-  saveTimer = setTimeout(() => {
-    localStorage.setItem(STORAGE_KEY, dataUrl);
-    saveTimer = null;
-  }, 500);
-}
 
 function PaintableModel(
   {
@@ -70,11 +108,13 @@ function PaintableModel(
     selectedColor,
     brushRadius,
     isSpacePressed,
-    canvasRef,
     layerLocked,
     layerVisible,
+    activeLayerId,
+    layers,
     modelScaleRef,
     materialConfig,
+    onTextureReady,
   }: PaintableModelProps,
   ref: React.ForwardedRef<{ undo: () => void; redo: () => void }>
 ) {
@@ -84,81 +124,57 @@ function PaintableModel(
   const [texture, setTexture] = useState<THREE.CanvasTexture | null>(null);
   const painting = useRef(false);
 
-  // Each history entry is captured once per stroke (on pointerdown), not per pixel.
-  const history = useRef<string[]>([]);
-  const redoStack = useRef<string[]>([]);
+  // Per-layer undo/redo stacks  { layerId -> dataUrl[] }
+  const history = useRef<Map<string, string[]>>(new Map());
+  const redoStack = useRef<Map<string, string[]>>(new Map());
 
-  // Center the model when it loads and record its bounding sphere for brush scaling.
+  // Initialise composite canvas once on mount.
+  useEffect(() => {
+    if (!compositeCanvas) {
+      compositeCanvas = document.createElement("canvas");
+      compositeCanvas.width = compositeCanvas.height = CANVAS_SIZE;
+      compositeCtx = compositeCanvas.getContext("2d")!;
+      compositeCtx.fillStyle = "#ffffff";
+      compositeCtx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+    }
+    if (!compositeTexture) {
+      compositeTexture = new THREE.CanvasTexture(compositeCanvas);
+    }
+    // Ensure the initial base layer canvas exists.
+    layers.forEach((l) => ensureLayerCanvas(l.id));
+    recomposite(layers);
+    setTexture(compositeTexture);
+    onTextureReady(compositeTexture);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Center model and record bounding dim for potential future use.
   useEffect(() => {
     if (!meshRef.current) return;
     const box = new THREE.Box3().setFromObject(meshRef.current);
     const center = box.getCenter(new THREE.Vector3());
     const size = box.getSize(new THREE.Vector3());
-
     meshRef.current.position.x = -center.x;
     meshRef.current.position.y = -center.y;
     meshRef.current.position.z = -center.z;
-
     const maxDim = Math.max(size.x, size.y, size.z);
-    // Store the model's max dimension so PaintingBoard can scale the brush.
     modelScaleRef.current = maxDim;
     camera.position.z = maxDim * 2;
   }, [scene, camera, modelScaleRef]);
 
-  // Initialise the paint canvas once per mounted instance.
-  useEffect(() => {
-    const size = 1024;
-    const offscreen = document.createElement("canvas");
-    offscreen.width = offscreen.height = size;
-    const ctx = offscreen.getContext("2d");
-    if (!ctx) return;
-
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      const img = new Image();
-      img.onload = () => {
-        ctx.drawImage(img, 0, 0);
-        const canvasTexture = new THREE.CanvasTexture(offscreen);
-        setTexture(canvasTexture);
-        canvasRef.current = { canvas: offscreen, ctx, texture: canvasTexture };
-      };
-      img.src = saved;
-    } else {
-      ctx.fillStyle = "#ffffff";
-      ctx.fillRect(0, 0, size, size);
-      const canvasTexture = new THREE.CanvasTexture(offscreen);
-      setTexture(canvasTexture);
-      canvasRef.current = { canvas: offscreen, ctx, texture: canvasTexture };
-    }
-
-    return () => {
-      // Clean up texture when the component unmounts.
-      canvasRef.current?.texture.dispose();
-      canvasRef.current = null;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Apply texture + material config to all meshes; dispose old materials to prevent GPU leaks.
+  // Re-apply material when texture or material config changes.
   useEffect(() => {
     if (!texture || !meshRef.current) return;
-
     meshRef.current.traverse((child) => {
       if ((child as THREE.Mesh).isMesh) {
         const mesh = child as THREE.Mesh;
-
         if (mesh.geometry && !mesh.geometry.attributes.normal) {
           mesh.geometry.computeVertexNormals();
         }
-
-        // Dispose previous material(s) before replacing.
         if (mesh.material) {
-          const prev = Array.isArray(mesh.material)
-            ? mesh.material
-            : [mesh.material];
+          const prev = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
           prev.forEach((m) => m.dispose());
         }
-
         mesh.material = new THREE.MeshStandardMaterial({
           color: "white",
           map: texture,
@@ -169,84 +185,88 @@ function PaintableModel(
     });
   }, [texture, materialConfig]);
 
-  // Capture a snapshot at the START of a stroke (pointerdown), not per pixel.
   const captureStrokeStart = useCallback(() => {
-    if (!canvasRef.current || layerLocked || !layerVisible) return;
-    history.current.push(canvasRef.current.canvas.toDataURL());
-    redoStack.current = [];
-  }, [canvasRef, layerLocked, layerVisible]);
+    if (layerLocked || !layerVisible) return;
+    const lc = layerCanvases.get(activeLayerId);
+    if (!lc) return;
+    const stack = history.current.get(activeLayerId) ?? [];
+    stack.push(lc.canvas.toDataURL());
+    history.current.set(activeLayerId, stack);
+    redoStack.current.set(activeLayerId, []);
+  }, [activeLayerId, layerLocked, layerVisible]);
 
-  /**
-   * paintAt — uses the UV coordinate already computed by R3F's own raycaster
-   * inside the ThreeEvent, so there is no manual NDC/bounds math that could
-   * drift from the actual hit point.
-   *
-   * Brush radius is scaled by the model's bounding-box max dimension so that
-   * the perceived size is consistent regardless of the model's world-space scale.
-   * Formula: pixelRadius = (brushRadius / modelMaxDim) * (canvasSize / 10)
-   * A reference modelMaxDim of 1.0 maps brushRadius 10 → ~102 canvas pixels
-   * (soft stroke on a 1024 texture).  Larger models get proportionally larger
-   * pixels; smaller models get smaller ones — preserving relative feel.
-   */
   const paintAt = useCallback(
     (uv: THREE.Vector2) => {
-      if (
-        !painting.current ||
-        isSpacePressed ||
-        layerLocked ||
-        !layerVisible ||
-        !canvasRef.current
-      )
-        return;
-
-      const { canvas: c, ctx, texture: tex } = canvasRef.current;
-      const x = uv.x * c.width;
-      const y = (1 - uv.y) * c.height;
-
-      ctx.fillStyle = selectedColor;
-      ctx.beginPath();
-      ctx.arc(x, y, Math.max(1, brushRadius), 0, Math.PI * 2);
-      ctx.fill();
-      tex.needsUpdate = true;
-
-      scheduleSave(c.toDataURL());
+      if (!painting.current || isSpacePressed || layerLocked || !layerVisible) return;
+      const lc = layerCanvases.get(activeLayerId);
+      if (!lc) return;
+      const x = uv.x * CANVAS_SIZE;
+      const y = (1 - uv.y) * CANVAS_SIZE;
+      lc.ctx.fillStyle = selectedColor;
+      lc.ctx.beginPath();
+      lc.ctx.arc(x, y, Math.max(1, brushRadius), 0, Math.PI * 2);
+      lc.ctx.fill();
+      scheduleRecomposite(layers);
     },
-    [isSpacePressed, layerLocked, layerVisible, canvasRef, brushRadius, selectedColor]
+    [isSpacePressed, layerLocked, layerVisible, activeLayerId, brushRadius, selectedColor, layers]
   );
 
-  const restoreFromDataUrl = useCallback(
-    (dataUrl: string) => {
-      if (!canvasRef.current) return;
-      const { canvas: c, ctx, texture: tex } = canvasRef.current;
+  const restoreLayerFromDataUrl = useCallback(
+    (layerId: string, dataUrl: string) => {
+      const lc = layerCanvases.get(layerId);
+      if (!lc) return;
       const img = new Image();
       img.onload = () => {
-        ctx.clearRect(0, 0, c.width, c.height);
-        ctx.drawImage(img, 0, 0);
-        tex.needsUpdate = true;
-        localStorage.setItem(STORAGE_KEY, c.toDataURL());
+        lc.ctx.clearRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+        lc.ctx.drawImage(img, 0, 0);
+        recomposite(layers);
       };
       img.src = dataUrl;
     },
-    [canvasRef]
+    [layers]
+  );
+
+  const clearLayerCanvas = useCallback(
+    (layerId: string) => {
+      const lc = layerCanvases.get(layerId);
+      if (!lc) return;
+      lc.ctx.clearRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+      recomposite(layers);
+    },
+    [layers]
   );
 
   const undo = useCallback(() => {
-    if (!canvasRef.current || history.current.length === 0) return;
-    // Push current state onto redo stack before restoring.
-    redoStack.current.push(canvasRef.current.canvas.toDataURL());
-    const dataUrl = history.current.pop()!;
-    restoreFromDataUrl(dataUrl);
-  }, [canvasRef, restoreFromDataUrl]);
+    const stack = history.current.get(activeLayerId);
+    if (!stack || stack.length === 0) return;
+    const lc = layerCanvases.get(activeLayerId);
+    const current = lc?.canvas.toDataURL() ?? "";
+    const redo = redoStack.current.get(activeLayerId) ?? [];
+    redo.push(current);
+    redoStack.current.set(activeLayerId, redo);
+    const prev = stack.pop()!;
+    history.current.set(activeLayerId, stack);
+    restoreLayerFromDataUrl(activeLayerId, prev);
+  }, [activeLayerId, restoreLayerFromDataUrl]);
 
   const redo = useCallback(() => {
-    if (!canvasRef.current || redoStack.current.length === 0) return;
-    // Push current state onto history before restoring.
-    history.current.push(canvasRef.current.canvas.toDataURL());
-    const dataUrl = redoStack.current.pop()!;
-    restoreFromDataUrl(dataUrl);
-  }, [canvasRef, restoreFromDataUrl]);
+    const stack = redoStack.current.get(activeLayerId);
+    if (!stack || stack.length === 0) return;
+    const lc = layerCanvases.get(activeLayerId);
+    const current = lc?.canvas.toDataURL() ?? "";
+    const hist = history.current.get(activeLayerId) ?? [];
+    hist.push(current);
+    history.current.set(activeLayerId, hist);
+    const next = stack.pop()!;
+    redoStack.current.set(activeLayerId, stack);
+    restoreLayerFromDataUrl(activeLayerId, next);
+  }, [activeLayerId, restoreLayerFromDataUrl]);
 
-  useImperativeHandle(ref, () => ({ undo, redo }), [undo, redo]);
+  useImperativeHandle(
+    ref,
+    () => ({ undo, redo, clearLayerCanvas }),
+    [undo, redo, clearLayerCanvas]
+  );
 
   return (
     <group
@@ -278,23 +298,15 @@ function PaintableModel(
 
 const PaintableModelWithRef = forwardRef(PaintableModel);
 
+// ─── ExportHandler ─────────────────────────────────────────────────────────────
 function ExportHandler({
   onExport,
 }: {
-  onExport: (
-    renderer: THREE.WebGLRenderer,
-    scene: THREE.Scene,
-    camera: THREE.Camera
-  ) => void;
+  onExport: (r: THREE.WebGLRenderer, s: THREE.Scene, c: THREE.Camera) => void;
 }) {
   const { gl, scene, camera } = useThree();
-
-  // Stable callback ref so the effect doesn't re-register on every render.
   const onExportRef = useRef(onExport);
-  useEffect(() => {
-    onExportRef.current = onExport;
-  });
-
+  useEffect(() => { onExportRef.current = onExport; });
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "s") {
@@ -305,10 +317,10 @@ function ExportHandler({
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
   }, [gl, scene, camera]);
-
   return null;
 }
 
+// ─── PaintingBoard ─────────────────────────────────────────────────────────────
 export default function PaintingBoard() {
   const [selectedColor, setSelectedColor] = useState<string>("#ff0000");
   const [brushRadius, setBrushRadius] = useState<number>(10);
@@ -327,56 +339,44 @@ export default function PaintingBoard() {
     roughness: 0.7,
     metalness: 0.0,
   });
-  const [modelUrl, setModelUrl] = useState<string>("https://v3b.fal.media/files/b/0a96e030/OHi5fn45b9ZKx5KPpsv31_model.glb" ||
-    "https://v3.fal.media/files/panda/BUZ_xt9BFOVvsX6dP3QFW_model.glb"
+  const [modelUrl, setModelUrl] = useState<string>(
+    "https://v3b.fal.media/files/b/0a96e030/OHi5fn45b9ZKx5KPpsv31_model.glb"
   );
-  const modelRef = useRef<{ undo: () => void; redo: () => void }>(null);
+
+  const modelRef = useRef<{ undo: () => void; redo: () => void; clearLayerCanvas: (id: string) => void }>(null);
   const controlsRef = useRef<any>(null);
-  const canvasRef = useRef<CanvasRefType | null>(null);
-  // Stores the model's bounding-box max dim so brush can be scaled proportionally.
   const modelScaleRef = useRef<number>(1);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
-  // Track the current object URL so we can revoke it when a new model is loaded.
   const objectUrlRef = useRef<string | null>(null);
 
-  // Custom brush cursor — shows not-allowed when layer is locked or hidden.
+  // Recomposite whenever layer visibility changes.
+  useEffect(() => {
+    recomposite(layers);
+  }, [layers]);
+
+  // Custom brush cursor.
   useEffect(() => {
     const activeLayer = layers.find((l) => l.id === activeLayerId);
     const isBlocked = activeLayer?.locked || !activeLayer?.visible;
-
     const cursorStyle = isSpacePressed
       ? "default"
       : isBlocked
         ? "not-allowed"
-        : `url("data:image/svg+xml,%3Csvg width='${brushRadius * 2}' height='${brushRadius * 2
-        }' viewBox='0 0 ${brushRadius * 2} ${brushRadius * 2
-        }' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Ccircle cx='${brushRadius}' cy='${brushRadius}' r='${brushRadius - 1
-        }' stroke='white' stroke-width='1' fill='none'/%3E%3C/svg%3E") ${brushRadius} ${brushRadius}, auto`;
-
+        : `url("data:image/svg+xml,%3Csvg width='${brushRadius * 2}' height='${brushRadius * 2}' viewBox='0 0 ${brushRadius * 2} ${brushRadius * 2}' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Ccircle cx='${brushRadius}' cy='${brushRadius}' r='${brushRadius - 1}' stroke='white' stroke-width='1' fill='none'/%3E%3C/svg%3E") ${brushRadius} ${brushRadius}, auto`;
     document.body.style.cursor = cursorStyle;
-    return () => {
-      document.body.style.cursor = "default";
-    };
+    return () => { document.body.style.cursor = "default"; };
   }, [isSpacePressed, brushRadius, layers, activeLayerId]);
 
-  const resetCamera = () => {
-    if (controlsRef.current) {
-      controlsRef.current.reset();
-    }
-  };
+  const resetCamera = () => { if (controlsRef.current) controlsRef.current.reset(); };
 
-  // Keyboard shortcuts for undo/redo.
+  // Undo/redo keyboard shortcuts.
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
       if (isSpacePressed) return;
       if ((e.metaKey || e.ctrlKey) && e.key === "z") {
         e.preventDefault();
-        if (e.shiftKey) {
-          modelRef.current?.redo();
-        } else {
-          modelRef.current?.undo();
-        }
+        e.shiftKey ? modelRef.current?.redo() : modelRef.current?.undo();
       } else if ((e.metaKey || e.ctrlKey) && e.key === "y") {
         e.preventDefault();
         modelRef.current?.redo();
@@ -389,10 +389,7 @@ export default function PaintingBoard() {
   // Space toggles paint/view mode.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.code === "Space") {
-        e.preventDefault();
-        setIsSpacePressed((prev) => !prev);
-      }
+      if (e.code === "Space") { e.preventDefault(); setIsSpacePressed((p) => !p); }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
@@ -401,46 +398,27 @@ export default function PaintingBoard() {
   const handleFileImport = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
-
-    // Revoke the previous object URL to free memory.
     if (objectUrlRef.current) {
       URL.revokeObjectURL(objectUrlRef.current);
-    }
-
-    // Dispose the cached GLTF for the old URL so Three.js doesn't leak it.
-    if (objectUrlRef.current) {
       useGLTF.clear(objectUrlRef.current);
     }
-
     localStorage.removeItem(STORAGE_KEY);
     localStorage.removeItem(COLOR_STORAGE_KEY);
-
+    // Clear all layer canvases for the new model.
+    layerCanvases.forEach((lc) => lc.ctx.clearRect(0, 0, CANVAS_SIZE, CANVAS_SIZE));
     const fileUrl = URL.createObjectURL(file);
     objectUrlRef.current = fileUrl;
     setModelUrl(fileUrl);
-
-    if (controlsRef.current) {
-      controlsRef.current.reset();
-    }
-
-    // Reset file input so the same file can be re-imported if needed.
+    if (controlsRef.current) controlsRef.current.reset();
     event.target.value = "";
   };
 
   const exportImage = useCallback(
-    (
-      renderer: THREE.WebGLRenderer,
-      scene: THREE.Scene,
-      camera: THREE.Camera
-    ) => {
+    (renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.Camera) => {
       renderer.render(scene, camera);
-      const imageData = renderer.domElement.toDataURL("image/png");
       const link = document.createElement("a");
-      link.href = imageData;
-      link.download = `miniature-painting-${new Date()
-        .toISOString()
-        .slice(0, 19)
-        .replace(/:/g, "-")}.png`;
+      link.href = renderer.domElement.toDataURL("image/png");
+      link.download = `miniature-painting-${new Date().toISOString().slice(0, 19).replace(/:/g, "-")}.png`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -448,13 +426,22 @@ export default function PaintingBoard() {
     []
   );
 
-  // Trigger export directly without a synthetic keyboard event.
   const handleExportImage = useCallback(() => {
-    if (!rendererRef.current) return;
-    // Re-use the exportImage function; we need scene + camera from the renderer.
-    // Dispatch the real shortcut so ExportHandler (which has scene/camera) fires it.
     const ev = new KeyboardEvent("keydown", { key: "s", ctrlKey: true, bubbles: true });
     window.dispatchEvent(ev);
+  }, []);
+
+  // When layers change (add/remove/visibility), ensure layer canvases exist and recomposite.
+  const handleLayersChange = useCallback((newLayers: Layer[]) => {
+    // Ensure a canvas exists for any new layer.
+    newLayers.forEach((l) => ensureLayerCanvas(l.id));
+    // Remove canvases for deleted layers.
+    const newIds = new Set(newLayers.map((l) => l.id));
+    layerCanvases.forEach((_, id) => {
+      if (!newIds.has(id)) layerCanvases.delete(id);
+    });
+    setLayers(newLayers);
+    // Recomposite is triggered by the layers useEffect above.
   }, []);
 
   return (
@@ -479,24 +466,10 @@ export default function PaintingBoard() {
           gl.setClearColor(0x000000, 0);
         }}
       >
-        {/* Ambient fill */}
         <ambientLight intensity={lightingConfig.ambientIntensity} />
-
-        {/* Key light — front-top-right */}
-        <directionalLight
-          position={[5, 5, 5]}
-          intensity={lightingConfig.keyIntensity}
-        />
-        {/* Fill light — front-top-left */}
-        <directionalLight
-          position={[-5, 3, 3]}
-          intensity={lightingConfig.fillIntensity}
-        />
-        {/* Rim / back light */}
-        <directionalLight
-          position={[0, 2, -6]}
-          intensity={lightingConfig.rimIntensity}
-        />
+        <directionalLight position={[5, 5, 5]} intensity={lightingConfig.keyIntensity} />
+        <directionalLight position={[-5, 3, 3]} intensity={lightingConfig.fillIntensity} />
+        <directionalLight position={[0, 2, -6]} intensity={lightingConfig.rimIntensity} />
 
         <Suspense fallback={null}>
           <PaintableModelWithRef
@@ -505,11 +478,13 @@ export default function PaintingBoard() {
             selectedColor={selectedColor}
             brushRadius={brushRadius}
             isSpacePressed={isSpacePressed}
-            canvasRef={canvasRef}
             layerLocked={layers.find((l) => l.id === activeLayerId)?.locked ?? false}
             layerVisible={layers.find((l) => l.id === activeLayerId)?.visible ?? true}
+            activeLayerId={activeLayerId}
+            layers={layers}
             modelScaleRef={modelScaleRef}
             materialConfig={materialConfig}
+            onTextureReady={() => {}}
           />
         </Suspense>
         <OrbitControls
@@ -526,9 +501,7 @@ export default function PaintingBoard() {
         selectedColor={selectedColor}
         setSelectedColor={(c) => {
           setSelectedColor(c);
-          setLayers((prev) =>
-            prev.map((l) => (l.id === activeLayerId ? { ...l, color: c } : l))
-          );
+          setLayers((prev) => prev.map((l) => (l.id === activeLayerId ? { ...l, color: c } : l)));
         }}
         brushSize={brushRadius}
         setBrushSize={setBrushRadius}
@@ -541,7 +514,7 @@ export default function PaintingBoard() {
         onImportModel={() => fileInputRef.current?.click()}
         layers={layers}
         activeLayerId={activeLayerId}
-        onLayersChange={setLayers}
+        onLayersChange={handleLayersChange}
         onActiveLayerChange={(id) => {
           setActiveLayerId(id);
           const layer = layers.find((l) => l.id === id);
