@@ -36,6 +36,7 @@ type PaintableModelProps = {
   canvasRef: React.RefObject<CanvasRefType | null>;
   layerLocked: boolean;
   layerVisible: boolean;
+  modelScaleRef: React.RefObject<number>;
 };
 
 // Throttle localStorage writes: save at most once every 500 ms while painting.
@@ -57,6 +58,7 @@ function PaintableModel(
     canvasRef,
     layerLocked,
     layerVisible,
+    modelScaleRef,
   }: PaintableModelProps,
   ref: React.ForwardedRef<{ undo: () => void; redo: () => void }>
 ) {
@@ -70,7 +72,7 @@ function PaintableModel(
   const history = useRef<string[]>([]);
   const redoStack = useRef<string[]>([]);
 
-  // Center the model when it loads.
+  // Center the model when it loads and record its bounding sphere for brush scaling.
   useEffect(() => {
     if (!meshRef.current) return;
     const box = new THREE.Box3().setFromObject(meshRef.current);
@@ -82,8 +84,10 @@ function PaintableModel(
     meshRef.current.position.z = -center.z;
 
     const maxDim = Math.max(size.x, size.y, size.z);
+    // Store the model's max dimension so PaintingBoard can scale the brush.
+    modelScaleRef.current = maxDim;
     camera.position.z = maxDim * 2;
-  }, [scene, camera]);
+  }, [scene, camera, modelScaleRef]);
 
   // Initialise the paint canvas once per mounted instance.
   useEffect(() => {
@@ -292,13 +296,13 @@ function ExportHandler({
 
 export default function PaintingBoard() {
   const [selectedColor, setSelectedColor] = useState<string>("#ff0000");
-  const [brushRadius, setBrushRadius] = useState<number>(8);
+  const [brushRadius, setBrushRadius] = useState<number>(10);
   const [isSpacePressed, setIsSpacePressed] = useState(false);
   const [layers, setLayers] = useState<Layer[]>([
     { id: "layer-base", name: "Base Layer", visible: true, locked: false, color: "#ff0000" },
   ]);
   const [activeLayerId, setActiveLayerId] = useState<string>("layer-base");
-  const [modelUrl, setModelUrl] = useState<string>(
+  const [modelUrl, setModelUrl] = useState<string>("https://v3b.fal.media/files/b/0a96e030/OHi5fn45b9ZKx5KPpsv31_model.glb" ||
     "https://v3.fal.media/files/panda/BUZ_xt9BFOVvsX6dP3QFW_model.glb"
   );
   const modelRef = useRef<{ undo: () => void; redo: () => void }>(null);
@@ -317,13 +321,10 @@ export default function PaintingBoard() {
     const cursorStyle = isSpacePressed
       ? "default"
       : isBlocked
-      ? "not-allowed"
-      : `url("data:image/svg+xml,%3Csvg width='${brushRadius * 2}' height='${
-          brushRadius * 2
-        }' viewBox='0 0 ${brushRadius * 2} ${
-          brushRadius * 2
-        }' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Ccircle cx='${brushRadius}' cy='${brushRadius}' r='${
-          brushRadius - 1
+        ? "not-allowed"
+        : `url("data:image/svg+xml,%3Csvg width='${brushRadius * 2}' height='${brushRadius * 2
+        }' viewBox='0 0 ${brushRadius * 2} ${brushRadius * 2
+        }' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Ccircle cx='${brushRadius}' cy='${brushRadius}' r='${brushRadius - 1
         }' stroke='white' stroke-width='1' fill='none'/%3E%3C/svg%3E") ${brushRadius} ${brushRadius}, auto`;
 
     document.body.style.cursor = cursorStyle;
@@ -491,8 +492,6 @@ export default function PaintingBoard() {
           enablePan={true}
           panSpeed={0.5}
           target={[0, 0, 0]}
-          minDistance={1}
-          maxDistance={10}
         />
         <ExportHandler onExport={exportImage} />
       </Canvas>
