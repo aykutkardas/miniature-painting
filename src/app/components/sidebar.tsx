@@ -39,7 +39,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { STORAGE_KEY, type LightingConfig, type MaterialConfig } from "./painting-board";
+import { STORAGE_KEY, layerCanvases, type LightingConfig, type MaterialConfig } from "./painting-board";
 
 export const COLOR_STORAGE_KEY = "paint-color-history";
 
@@ -76,6 +76,7 @@ interface SidebarProps {
   onLightingChange: (config: LightingConfig) => void;
   materialConfig: MaterialConfig;
   onMaterialChange: (config: MaterialConfig) => void;
+  layerPreviewTick: number;
 }
 
 // ─── Section header ───────────────────────────────────────────────────────────
@@ -158,6 +159,35 @@ function IconBtn({
   );
 }
 
+// ─── Layer texture thumbnail ──────────────────────────────────────────────────
+function LayerThumbnail({ layerId, tick }: { layerId: string; tick: number }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    const dest = canvasRef.current;
+    if (!dest) return;
+    const src = layerCanvases.get(layerId);
+    const ctx = dest.getContext("2d");
+    if (!ctx) return;
+    ctx.clearRect(0, 0, dest.width, dest.height);
+    if (src) {
+      ctx.drawImage(src.canvas, 0, 0, dest.width, dest.height);
+    }
+  // tick is intentionally the only dep — re-draws whenever the parent increments it
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tick, layerId]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      width={24}
+      height={24}
+      className="flex-shrink-0 rounded-sm border border-white/10"
+      style={{ background: "rgba(255,255,255,0.04)", imageRendering: "pixelated" }}
+    />
+  );
+}
+
 // ─── Main Sidebar ─────────────────────────────────────────────────────────────
 export default function Sidebar({
   selectedColor,
@@ -179,11 +209,14 @@ export default function Sidebar({
   onLightingChange,
   materialConfig,
   onMaterialChange,
+  layerPreviewTick,
 }: SidebarProps) {
   const [colorHistory, setColorHistory] = useState<string[]>([]);
   const [tempColor, setTempColor] = useState(selectedColor);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const renameRef = useRef<HTMLInputElement>(null);
+  const dragIdRef = useRef<string | null>(null);
+  const dragOverIdRef = useRef<string | null>(null);
 
   // Load color history on mount
   useEffect(() => {
@@ -252,6 +285,17 @@ export default function Sidebar({
   const renameLayer = (id: string, name: string) => {
     onLayersChange(layers.map((l) => (l.id === id ? { ...l, name } : l)));
     setRenamingId(null);
+  };
+
+  const moveLayer = (fromId: string, toId: string) => {
+    if (fromId === toId) return;
+    const from = layers.findIndex((l) => l.id === fromId);
+    const to = layers.findIndex((l) => l.id === toId);
+    if (from === -1 || to === -1) return;
+    const updated = [...layers];
+    const [item] = updated.splice(from, 1);
+    updated.splice(to, 0, item);
+    onLayersChange(updated);
   };
 
   return (
@@ -485,6 +529,26 @@ export default function Sidebar({
                 return (
                   <div
                     key={layer.id}
+                    draggable
+                    onDragStart={(e) => {
+                      dragIdRef.current = layer.id;
+                      e.dataTransfer.effectAllowed = "move";
+                    }}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      e.dataTransfer.dropEffect = "move";
+                      dragOverIdRef.current = layer.id;
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      if (dragIdRef.current) moveLayer(dragIdRef.current, layer.id);
+                      dragIdRef.current = null;
+                      dragOverIdRef.current = null;
+                    }}
+                    onDragEnd={() => {
+                      dragIdRef.current = null;
+                      dragOverIdRef.current = null;
+                    }}
                     className={cn(
                       "group flex items-center gap-1 rounded px-1.5 py-1 cursor-pointer transition-colors",
                       isActive
@@ -493,13 +557,10 @@ export default function Sidebar({
                     )}
                     onClick={() => onActiveLayerChange(layer.id)}
                   >
-                    <GripVertical className="h-3 w-3 opacity-0 group-hover:opacity-30 flex-shrink-0" />
+                    <GripVertical className="h-3 w-3 opacity-30 flex-shrink-0 cursor-grab active:cursor-grabbing" />
 
-                    {/* Color dot */}
-                    <div
-                      className="h-2.5 w-2.5 rounded-sm flex-shrink-0 border border-white/10"
-                      style={{ backgroundColor: layer.color }}
-                    />
+                    {/* Texture preview thumbnail */}
+                    <LayerThumbnail layerId={layer.id} tick={layerPreviewTick} />
 
                     {/* Name */}
                     <div className="flex-1 min-w-0">

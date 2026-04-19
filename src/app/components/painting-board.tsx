@@ -68,12 +68,17 @@ export function recomposite(layers: Layer[]) {
 /** Schedule a recomposite via rAF — at most one per frame, no stale-closure risk. */
 let rafPending = false;
 let pendingLayers: Layer[] | null = null;
+let onRecompositeCallback: (() => void) | null = null;
+export function setOnRecompositeCallback(fn: () => void) {
+  onRecompositeCallback = fn;
+}
 export function scheduleRecomposite(layers: Layer[]) {
   pendingLayers = layers;
   if (rafPending) return;
   rafPending = true;
   requestAnimationFrame(() => {
     if (pendingLayers) recomposite(pendingLayers);
+    onRecompositeCallback?.();
     rafPending = false;
     pendingLayers = null;
   });
@@ -344,6 +349,7 @@ export default function PaintingBoard() {
     roughness: 0.7,
     metalness: 0.0,
   });
+  const [layerPreviewTick, setLayerPreviewTick] = useState(0);
   const [modelUrl, setModelUrl] = useState<string>(
     "https://v3b.fal.media/files/b/0a96e030/OHi5fn45b9ZKx5KPpsv31_model.glb"
   );
@@ -358,9 +364,16 @@ export default function PaintingBoard() {
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const objectUrlRef = useRef<string | null>(null);
 
-  // Recomposite whenever layer visibility changes.
+  // Register callback so every rAF recomposite bumps the preview tick.
+  useEffect(() => {
+    setOnRecompositeCallback(() => setLayerPreviewTick((t) => t + 1));
+    return () => setOnRecompositeCallback(() => {});
+  }, []);
+
+  // Recomposite whenever layer visibility/order changes.
   useEffect(() => {
     recomposite(layers);
+    setLayerPreviewTick((t) => t + 1);
   }, [layers]);
 
   // Custom brush cursor.
@@ -534,6 +547,7 @@ export default function PaintingBoard() {
         onLightingChange={setLightingConfig}
         materialConfig={materialConfig}
         onMaterialChange={setMaterialConfig}
+        layerPreviewTick={layerPreviewTick}
       />
     </div>
   );
