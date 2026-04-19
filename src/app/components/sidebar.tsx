@@ -215,8 +215,8 @@ export default function Sidebar({
   const [tempColor, setTempColor] = useState(selectedColor);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const renameRef = useRef<HTMLInputElement>(null);
-  const dragIdRef = useRef<string | null>(null);
-  const dragOverIdRef = useRef<string | null>(null);
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
 
   // Load color history on mount
   useEffect(() => {
@@ -287,11 +287,8 @@ export default function Sidebar({
     setRenamingId(null);
   };
 
-  const moveLayer = (fromId: string, toId: string) => {
-    if (fromId === toId) return;
-    const from = layers.findIndex((l) => l.id === fromId);
-    const to = layers.findIndex((l) => l.id === toId);
-    if (from === -1 || to === -1) return;
+  const moveLayer = (from: number, to: number) => {
+    if (from === to) return;
     const updated = [...layers];
     const [item] = updated.splice(from, 1);
     updated.splice(to, 0, item);
@@ -524,36 +521,46 @@ export default function Sidebar({
             </button>
 
             <div className="flex flex-col gap-0.5">
-              {layers.map((layer) => {
+              {layers.map((layer, index) => {
                 const isActive = layer.id === activeLayerId;
+                const isDragging = dragIndex === index;
+                const isDropTarget = dragOverIndex === index && dragIndex !== index;
                 return (
                   <div
                     key={layer.id}
                     draggable
                     onDragStart={(e) => {
-                      dragIdRef.current = layer.id;
                       e.dataTransfer.effectAllowed = "move";
+                      // Store index in dataTransfer as a reliable fallback
+                      e.dataTransfer.setData("text/plain", String(index));
+                      setDragIndex(index);
                     }}
                     onDragOver={(e) => {
                       e.preventDefault();
                       e.dataTransfer.dropEffect = "move";
-                      dragOverIdRef.current = layer.id;
+                      setDragOverIndex(index);
+                    }}
+                    onDragLeave={() => {
+                      setDragOverIndex(null);
                     }}
                     onDrop={(e) => {
                       e.preventDefault();
-                      if (dragIdRef.current) moveLayer(dragIdRef.current, layer.id);
-                      dragIdRef.current = null;
-                      dragOverIdRef.current = null;
+                      const from = Number(e.dataTransfer.getData("text/plain"));
+                      if (!Number.isNaN(from)) moveLayer(from, index);
+                      setDragIndex(null);
+                      setDragOverIndex(null);
                     }}
                     onDragEnd={() => {
-                      dragIdRef.current = null;
-                      dragOverIdRef.current = null;
+                      setDragIndex(null);
+                      setDragOverIndex(null);
                     }}
                     className={cn(
                       "group flex items-center gap-1 rounded px-1.5 py-1 cursor-pointer transition-colors",
-                      isActive
+                      isActive && !isDragging
                         ? "bg-[#419bf9]/15 text-white/90"
-                        : "text-white/40 hover:bg-white/[0.04] hover:text-white/70"
+                        : "text-white/40 hover:bg-white/[0.04] hover:text-white/70",
+                      isDragging && "opacity-40",
+                      isDropTarget && "border border-[#419bf9]/50 bg-[#419bf9]/08"
                     )}
                     onClick={() => onActiveLayerChange(layer.id)}
                   >
