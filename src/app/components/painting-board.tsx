@@ -440,12 +440,15 @@ export default function PaintingBoard() {
       />
       <Canvas
         camera={{ position: [0, 0, 3], fov: 60 }}
+        gl={{ alpha: true, antialias: true }}
+        style={{ background: "transparent" }}
         onCreated={({ gl }) => {
           rendererRef.current = gl;
+          gl.setClearColor(0x000000, 0);
         }}
       >
         {/* Ambient light for base illumination */}
-        <ambientLight intensity={0.4} />
+        <ambientLight intensity={0.7} />
 
         {/* Main directional lights from different angles */}
         <directionalLight
