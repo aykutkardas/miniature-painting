@@ -203,19 +203,15 @@ function PaintableModel(
       const x = uv.x * c.width;
       const y = (1 - uv.y) * c.height;
 
-      // Scale brush so it feels the same regardless of model size.
-      const modelDim = modelScaleRef.current ?? 1;
-      const pixelRadius = (brushRadius / modelDim) * (c.width / 100);
-
       ctx.fillStyle = selectedColor;
       ctx.beginPath();
-      ctx.arc(x, y, Math.max(1, pixelRadius), 0, Math.PI * 2);
+      ctx.arc(x, y, Math.max(1, brushRadius), 0, Math.PI * 2);
       ctx.fill();
       tex.needsUpdate = true;
 
       scheduleSave(c.toDataURL());
     },
-    [isSpacePressed, layerLocked, layerVisible, canvasRef, brushRadius, selectedColor, modelScaleRef]
+    [isSpacePressed, layerLocked, layerVisible, canvasRef, brushRadius, selectedColor]
   );
 
   const restoreFromDataUrl = useCallback(
