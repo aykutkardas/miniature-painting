@@ -17,10 +17,10 @@ export default function Home() {
         style={{ backdropFilter: "blur(6px)", WebkitBackdropFilter: "blur(6px)" }}
       />
 
-      {/* Blueprint scene container */}
+      {/* Blueprint scene container — leaves 220px on the right for the sidebar */}
       <div
-        className="absolute inset-0 flex items-center justify-center"
-        style={{ zIndex: 1 }}
+        className="absolute top-0 left-0 bottom-0 flex items-center justify-center"
+        style={{ right: "220px", zIndex: 1 }}
       >
         {/* Blueprint card */}
         <div

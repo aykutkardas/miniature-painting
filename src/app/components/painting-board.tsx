@@ -12,7 +12,7 @@ import {
 import { Canvas, useThree } from "@react-three/fiber";
 import { OrbitControls, useGLTF } from "@react-three/drei";
 import * as THREE from "three";
-import BottomBar from "./bottom-bar";
+import Sidebar, { type Layer } from "./sidebar";
 
 export const STORAGE_KEY = "paint-canvas";
 export const COLOR_STORAGE_KEY = "paint-color";
@@ -288,6 +288,10 @@ export default function PaintingBoard() {
   const [selectedColor, setSelectedColor] = useState<string>("#ff0000");
   const [brushRadius, setBrushRadius] = useState<number>(8);
   const [isSpacePressed, setIsSpacePressed] = useState(false);
+  const [layers, setLayers] = useState<Layer[]>([
+    { id: "layer-base", name: "Base Layer", visible: true, locked: false, color: "#ff0000" },
+  ]);
+  const [activeLayerId, setActiveLayerId] = useState<string>("layer-base");
   const [modelUrl, setModelUrl] = useState<string>(
     "https://v3.fal.media/files/panda/BUZ_xt9BFOVvsX6dP3QFW_model.glb"
   );
@@ -415,7 +419,7 @@ export default function PaintingBoard() {
   }, []);
 
   return (
-    <div className="relative" style={{ width: "100vw", height: "100vh" }}>
+    <div className="relative" style={{ width: "calc(100vw - 220px)", height: "100vh" }}>
       <input
         type="file"
         ref={fileInputRef}
@@ -479,9 +483,14 @@ export default function PaintingBoard() {
         />
         <ExportHandler onExport={exportImage} />
       </Canvas>
-      <BottomBar
+      <Sidebar
         selectedColor={selectedColor}
-        setSelectedColor={setSelectedColor}
+        setSelectedColor={(c) => {
+          setSelectedColor(c);
+          setLayers((prev) =>
+            prev.map((l) => (l.id === activeLayerId ? { ...l, color: c } : l))
+          );
+        }}
         brushSize={brushRadius}
         setBrushSize={setBrushRadius}
         onUndo={() => modelRef.current?.undo()}
@@ -491,6 +500,14 @@ export default function PaintingBoard() {
         onResetCamera={resetCamera}
         onExportImage={handleExportImage}
         onImportModel={() => fileInputRef.current?.click()}
+        layers={layers}
+        activeLayerId={activeLayerId}
+        onLayersChange={setLayers}
+        onActiveLayerChange={(id) => {
+          setActiveLayerId(id);
+          const layer = layers.find((l) => l.id === id);
+          if (layer) setSelectedColor(layer.color);
+        }}
       />
     </div>
   );
