@@ -6,7 +6,7 @@ export default function Home() {
     <div
       className="w-screen h-screen relative overflow-hidden"
       style={{
-        backgroundImage: "url('/wooden-desk.jpg')",
+        backgroundImage: "url('/desk.png')",
         backgroundSize: "cover",
         backgroundPosition: "center",
       }}
@@ -36,8 +36,7 @@ export default function Home() {
               linear-gradient(90deg, rgba(65, 155, 249, 0.07) 1px, transparent 1px)
             `,
             backgroundSize: "80px 80px, 80px 80px, 20px 20px, 20px 20px",
-            backgroundPosition: "-1px -1px, -1px -1px, -1px -1px, -1px -1px",
-            boxShadow: "0 0 60px 20px rgba(30, 80, 160, 0.4), inset 0 0 120px rgba(10, 30, 80, 0.5)",
+            backgroundPosition: "-1px -1px, -1px -1px, -1px -1px, -1px -1px"
           }}
         >
           {/* Blueprint corner markers */}
