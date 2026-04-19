@@ -64,7 +64,7 @@ function PaintableModel(
 ) {
   const { scene } = useGLTF(url) as unknown as GLTFResult;
   const meshRef = useRef<THREE.Group>(null);
-  const { camera, gl } = useThree();
+  const { camera } = useThree();
   const [texture, setTexture] = useState<THREE.CanvasTexture | null>(null);
   const painting = useRef(false);
 
@@ -160,48 +160,46 @@ function PaintableModel(
     redoStack.current = [];
   }, [canvasRef, layerLocked, layerVisible]);
 
+  /**
+   * paintAt — uses the UV coordinate already computed by R3F's own raycaster
+   * inside the ThreeEvent, so there is no manual NDC/bounds math that could
+   * drift from the actual hit point.
+   *
+   * Brush radius is scaled by the model's bounding-box max dimension so that
+   * the perceived size is consistent regardless of the model's world-space scale.
+   * Formula: pixelRadius = (brushRadius / modelMaxDim) * (canvasSize / 10)
+   * A reference modelMaxDim of 1.0 maps brushRadius 10 → ~102 canvas pixels
+   * (soft stroke on a 1024 texture).  Larger models get proportionally larger
+   * pixels; smaller models get smaller ones — preserving relative feel.
+   */
   const paintAt = useCallback(
-    (event: PointerEvent) => {
+    (uv: THREE.Vector2) => {
       if (
         !painting.current ||
         isSpacePressed ||
         layerLocked ||
         !layerVisible ||
-        !canvasRef.current ||
-        !meshRef.current
+        !canvasRef.current
       )
         return;
 
-      const mouse = new THREE.Vector2();
-      const raycaster = new THREE.Raycaster();
-      const bounds = gl.domElement.getBoundingClientRect();
+      const { canvas: c, ctx, texture: tex } = canvasRef.current;
+      const x = uv.x * c.width;
+      const y = (1 - uv.y) * c.height;
 
-      mouse.x = ((event.clientX - bounds.left) / bounds.width) * 2 - 1;
-      mouse.y = -((event.clientY - bounds.top) / bounds.height) * 2 + 1;
+      // Scale brush so it feels the same regardless of model size.
+      const modelDim = modelScaleRef.current ?? 1;
+      const pixelRadius = (brushRadius / modelDim) * (c.width / 100);
 
-      raycaster.setFromCamera(mouse, camera);
-      const intersects = raycaster.intersectObject(meshRef.current, true);
+      ctx.fillStyle = selectedColor;
+      ctx.beginPath();
+      ctx.arc(x, y, Math.max(1, pixelRadius), 0, Math.PI * 2);
+      ctx.fill();
+      tex.needsUpdate = true;
 
-      if (intersects.length > 0 && intersects[0].uv) {
-        const uv = intersects[0].uv;
-        const { canvas: c, ctx, texture: tex } = canvasRef.current;
-        const x = uv.x * c.width;
-        const y = (1 - uv.y) * c.height;
-
-        const uvRadius = brushRadius / c.width;
-        const pixelRadius = uvRadius * c.width;
-
-        ctx.fillStyle = selectedColor;
-        ctx.beginPath();
-        ctx.arc(x, y, pixelRadius, 0, Math.PI * 2);
-        ctx.fill();
-        tex.needsUpdate = true;
-
-        // Throttled localStorage save.
-        scheduleSave(c.toDataURL());
-      }
+      scheduleSave(c.toDataURL());
     },
-    [isSpacePressed, layerLocked, layerVisible, canvasRef, brushRadius, selectedColor, camera, gl]
+    [isSpacePressed, layerLocked, layerVisible, canvasRef, brushRadius, selectedColor, modelScaleRef]
   );
 
   const restoreFromDataUrl = useCallback(
@@ -242,18 +240,23 @@ function PaintableModel(
     <group
       ref={meshRef}
       onPointerDown={(e) => {
-        if (!isSpacePressed) {
+        if (!isSpacePressed && e.uv) {
+          e.stopPropagation();
           painting.current = true;
           captureStrokeStart();
-          paintAt(e as unknown as PointerEvent);
+          paintAt(e.uv);
         }
       }}
       onPointerMove={(e) => {
-        if (e.buttons === 1) {
-          paintAt(e as unknown as PointerEvent);
+        if (e.buttons === 1 && e.uv) {
+          e.stopPropagation();
+          paintAt(e.uv);
         }
       }}
-      onPointerUp={() => (painting.current = false)}
+      onPointerUp={(e) => {
+        e.stopPropagation();
+        painting.current = false;
+      }}
       onPointerLeave={() => (painting.current = false)}
     >
       <primitive object={scene} />
@@ -308,6 +311,8 @@ export default function PaintingBoard() {
   const modelRef = useRef<{ undo: () => void; redo: () => void }>(null);
   const controlsRef = useRef<any>(null);
   const canvasRef = useRef<CanvasRefType | null>(null);
+  // Stores the model's bounding-box max dim so brush can be scaled proportionally.
+  const modelScaleRef = useRef<number>(1);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   // Track the current object URL so we can revoke it when a new model is loaded.
@@ -483,6 +488,7 @@ export default function PaintingBoard() {
             canvasRef={canvasRef}
             layerLocked={layers.find((l) => l.id === activeLayerId)?.locked ?? false}
             layerVisible={layers.find((l) => l.id === activeLayerId)?.visible ?? true}
+            modelScaleRef={modelScaleRef}
           />
         </Suspense>
         <OrbitControls
