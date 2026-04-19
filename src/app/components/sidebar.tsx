@@ -257,7 +257,7 @@ export default function Sidebar({
   return (
     <TooltipProvider>
       <aside
-        className="fixed right-0 top-0 h-screen w-[220px] flex flex-col select-none overflow-y-auto overflow-x-hidden"
+        className="relative h-full w-[220px] flex-shrink-0 flex flex-col select-none overflow-y-auto overflow-x-hidden"
         style={{
           background: "#131720",
           borderLeft: "1px solid rgba(255,255,255,0.06)",
@@ -600,7 +600,7 @@ export default function Sidebar({
         {/* ── Spacer to push bottom content down ────────────────────────────── */}
         <div className="flex-1" />
 
-        {/* ── Footer ────────────────────────────────────────────────────────── */}
+        {/* ── Footer ───────────────���────────────────────────────────────────── */}
         <div
           className="px-3 py-2 border-t border-white/[0.06] flex items-center gap-2"
           style={{ fontSize: 10 }}

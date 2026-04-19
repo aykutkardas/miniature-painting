@@ -17,16 +17,17 @@ export default function Home() {
         style={{ backdropFilter: "blur(6px)", WebkitBackdropFilter: "blur(6px)" }}
       />
 
-      {/* Blueprint scene container — leaves 220px on the right for the sidebar */}
+      {/* Center the blueprint card in the full viewport */}
       <div
-        className="absolute top-0 left-0 bottom-0 flex items-center justify-center"
-        style={{ right: "220px", zIndex: 1 }}
+        className="absolute inset-0 flex items-center justify-center"
+        style={{ zIndex: 1 }}
       >
-        {/* Blueprint card — max 80% of the available area, canvas fills it fully */}
+        {/* Blueprint card — 80% of the viewport, sidebar sits inside it via flex */}
         <div
           className="relative"
-          style={{ width: "80%", height: "80%" }}
           style={{
+            width: "80%",
+            height: "80%",
             background: "#0a1628",
             backgroundImage: `
               linear-gradient(rgba(65, 155, 249, 0.18) 1px, transparent 1px),
@@ -58,7 +59,7 @@ export default function Home() {
             <div className="h-px w-16" style={{ background: "rgba(65,155,249,0.4)" }} />
           </div>
 
-          {/* The 3D canvas */}
+          {/* PaintingBoard: canvas (flex-1) + sidebar (220px) in a flex row */}
           <PaintingBoard />
         </div>
       </div>

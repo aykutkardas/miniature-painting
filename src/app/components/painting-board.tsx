@@ -446,7 +446,7 @@ export default function PaintingBoard() {
 
   return (
     <div
-      className="relative w-full h-full"
+      className="flex w-full h-full"
       onContextMenu={(e) => e.preventDefault()}
     >
       <input
@@ -456,6 +456,8 @@ export default function PaintingBoard() {
         accept=".glb"
         className="hidden"
       />
+      {/* Canvas area — grows to fill available width */}
+      <div className="relative flex-1">
       <Canvas
         camera={{ position: [0, 0, 3], fov: 60 }}
         gl={{ alpha: true, antialias: true }}
@@ -496,6 +498,7 @@ export default function PaintingBoard() {
         />
         <ExportHandler onExport={exportImage} />
       </Canvas>
+      </div>{/* end canvas wrapper */}
       <Sidebar
         selectedColor={selectedColor}
         setSelectedColor={(c) => {
