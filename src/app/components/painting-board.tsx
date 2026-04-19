@@ -446,8 +446,7 @@ export default function PaintingBoard() {
 
   return (
     <div
-      className="relative"
-      style={{ width: "calc(100vw - 220px)", height: "100vh" }}
+      className="relative w-full h-full"
       onContextMenu={(e) => e.preventDefault()}
     >
       <input

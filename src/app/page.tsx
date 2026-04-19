@@ -22,9 +22,10 @@ export default function Home() {
         className="absolute top-0 left-0 bottom-0 flex items-center justify-center"
         style={{ right: "220px", zIndex: 1 }}
       >
-        {/* Blueprint card */}
+        {/* Blueprint card — max 80% of the available area, canvas fills it fully */}
         <div
-          className="relative w-full h-full"
+          className="relative"
+          style={{ width: "80%", height: "80%" }}
           style={{
             background: "#0a1628",
             backgroundImage: `
