@@ -34,6 +34,8 @@ type PaintableModelProps = {
   brushRadius: number;
   isSpacePressed: boolean;
   canvasRef: React.RefObject<CanvasRefType | null>;
+  layerLocked: boolean;
+  layerVisible: boolean;
 };
 
 // Throttle localStorage writes: save at most once every 500 ms while painting.
@@ -53,6 +55,8 @@ function PaintableModel(
     brushRadius,
     isSpacePressed,
     canvasRef,
+    layerLocked,
+    layerVisible,
   }: PaintableModelProps,
   ref: React.ForwardedRef<{ undo: () => void; redo: () => void }>
 ) {
@@ -147,16 +151,18 @@ function PaintableModel(
 
   // Capture a snapshot at the START of a stroke (pointerdown), not per pixel.
   const captureStrokeStart = useCallback(() => {
-    if (!canvasRef.current) return;
+    if (!canvasRef.current || layerLocked || !layerVisible) return;
     history.current.push(canvasRef.current.canvas.toDataURL());
     redoStack.current = [];
-  }, [canvasRef]);
+  }, [canvasRef, layerLocked, layerVisible]);
 
   const paintAt = useCallback(
     (event: PointerEvent) => {
       if (
         !painting.current ||
         isSpacePressed ||
+        layerLocked ||
+        !layerVisible ||
         !canvasRef.current ||
         !meshRef.current
       )
@@ -191,7 +197,7 @@ function PaintableModel(
         scheduleSave(c.toDataURL());
       }
     },
-    [isSpacePressed, canvasRef, brushRadius, selectedColor, camera, gl]
+    [isSpacePressed, layerLocked, layerVisible, canvasRef, brushRadius, selectedColor, camera, gl]
   );
 
   const restoreFromDataUrl = useCallback(
@@ -303,10 +309,15 @@ export default function PaintingBoard() {
   // Track the current object URL so we can revoke it when a new model is loaded.
   const objectUrlRef = useRef<string | null>(null);
 
-  // Custom brush cursor.
+  // Custom brush cursor — shows not-allowed when layer is locked or hidden.
   useEffect(() => {
+    const activeLayer = layers.find((l) => l.id === activeLayerId);
+    const isBlocked = activeLayer?.locked || !activeLayer?.visible;
+
     const cursorStyle = isSpacePressed
       ? "default"
+      : isBlocked
+      ? "not-allowed"
       : `url("data:image/svg+xml,%3Csvg width='${brushRadius * 2}' height='${
           brushRadius * 2
         }' viewBox='0 0 ${brushRadius * 2} ${
@@ -319,7 +330,7 @@ export default function PaintingBoard() {
     return () => {
       document.body.style.cursor = "default";
     };
-  }, [isSpacePressed, brushRadius]);
+  }, [isSpacePressed, brushRadius, layers, activeLayerId]);
 
   const resetCamera = () => {
     if (controlsRef.current) {
@@ -469,6 +480,8 @@ export default function PaintingBoard() {
             brushRadius={brushRadius}
             isSpacePressed={isSpacePressed}
             canvasRef={canvasRef}
+            layerLocked={layers.find((l) => l.id === activeLayerId)?.locked ?? false}
+            layerVisible={layers.find((l) => l.id === activeLayerId)?.visible ?? true}
           />
         </Suspense>
         <OrbitControls
