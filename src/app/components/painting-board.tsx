@@ -4,6 +4,7 @@ import {
   useRef,
   useState,
   useEffect,
+  useCallback,
   Suspense,
   useImperativeHandle,
   forwardRef,
@@ -12,6 +13,7 @@ import { Canvas, useThree } from "@react-three/fiber";
 import { OrbitControls, useGLTF } from "@react-three/drei";
 import * as THREE from "three";
 import BottomBar from "./bottom-bar";
+
 export const STORAGE_KEY = "paint-canvas";
 export const COLOR_STORAGE_KEY = "paint-color";
 
@@ -34,6 +36,16 @@ type PaintableModelProps = {
   canvasRef: React.RefObject<CanvasRefType | null>;
 };
 
+// Throttle localStorage writes: save at most once every 500 ms while painting.
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+function scheduleSave(dataUrl: string) {
+  if (saveTimer !== null) return;
+  saveTimer = setTimeout(() => {
+    localStorage.setItem(STORAGE_KEY, dataUrl);
+    saveTimer = null;
+  }, 500);
+}
+
 function PaintableModel(
   {
     url,
@@ -49,227 +61,172 @@ function PaintableModel(
   const { camera, gl } = useThree();
   const [texture, setTexture] = useState<THREE.CanvasTexture | null>(null);
   const painting = useRef(false);
+
+  // Each history entry is captured once per stroke (on pointerdown), not per pixel.
   const history = useRef<string[]>([]);
   const redoStack = useRef<string[]>([]);
 
-  // Add step counter refs
-  const lastUndoTime = useRef<number>(0);
-  const lastRedoTime = useRef<number>(0);
-  const undoStepCount = useRef<number>(1);
-  const redoStepCount = useRef<number>(1);
-  const CLICK_TIMEOUT = 3000; // 3 seconds
-
-  // Center the model when it's loaded
+  // Center the model when it loads.
   useEffect(() => {
-    if (meshRef.current) {
-      const box = new THREE.Box3().setFromObject(meshRef.current);
-      const center = box.getCenter(new THREE.Vector3());
-      const size = box.getSize(new THREE.Vector3());
+    if (!meshRef.current) return;
+    const box = new THREE.Box3().setFromObject(meshRef.current);
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
 
-      // Center the model
-      meshRef.current.position.x = -center.x;
-      meshRef.current.position.y = -center.y;
-      meshRef.current.position.z = -center.z;
+    meshRef.current.position.x = -center.x;
+    meshRef.current.position.y = -center.y;
+    meshRef.current.position.z = -center.z;
 
-      // Adjust camera position based on model size
-      const maxDim = Math.max(size.x, size.y, size.z);
-      camera.position.z = maxDim * 2;
-    }
+    const maxDim = Math.max(size.x, size.y, size.z);
+    camera.position.z = maxDim * 2;
   }, [scene, camera]);
 
+  // Initialise the paint canvas once per mounted instance.
   useEffect(() => {
     const size = 1024;
-    const canvas = document.createElement("canvas");
-    canvas.width = canvas.height = size;
-    const ctx = canvas.getContext("2d");
+    const offscreen = document.createElement("canvas");
+    offscreen.width = offscreen.height = size;
+    const ctx = offscreen.getContext("2d");
     if (!ctx) return;
 
-    // Restore from localStorage
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
       const img = new Image();
       img.onload = () => {
         ctx.drawImage(img, 0, 0);
-        const canvasTexture = new THREE.CanvasTexture(canvas);
+        const canvasTexture = new THREE.CanvasTexture(offscreen);
         setTexture(canvasTexture);
-        canvasRef.current = { canvas, ctx, texture: canvasTexture };
+        canvasRef.current = { canvas: offscreen, ctx, texture: canvasTexture };
       };
       img.src = saved;
     } else {
       ctx.fillStyle = "#ffffff";
       ctx.fillRect(0, 0, size, size);
-      const canvasTexture = new THREE.CanvasTexture(canvas);
+      const canvasTexture = new THREE.CanvasTexture(offscreen);
       setTexture(canvasTexture);
-      canvasRef.current = { canvas, ctx, texture: canvasTexture };
+      canvasRef.current = { canvas: offscreen, ctx, texture: canvasTexture };
     }
+
+    return () => {
+      // Clean up texture when the component unmounts.
+      canvasRef.current?.texture.dispose();
+      canvasRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Apply texture to all meshes; dispose the old material to prevent GPU leaks.
   useEffect(() => {
-    if (texture && meshRef.current) {
-      meshRef.current.traverse((child) => {
-        if ((child as THREE.Mesh).isMesh) {
-          const mesh = child as THREE.Mesh;
+    if (!texture || !meshRef.current) return;
 
-          if (mesh.geometry && !mesh.geometry.attributes.normal) {
-            mesh.geometry.computeVertexNormals();
-          }
+    meshRef.current.traverse((child) => {
+      if ((child as THREE.Mesh).isMesh) {
+        const mesh = child as THREE.Mesh;
 
-          mesh.material = new THREE.MeshStandardMaterial({
-            color: "white",
-            map: texture,
-            roughness: 0.2,
-            metalness: 0.0,
-          });
+        if (mesh.geometry && !mesh.geometry.attributes.normal) {
+          mesh.geometry.computeVertexNormals();
         }
-      });
-    }
+
+        // Dispose previous material(s) before replacing.
+        if (mesh.material) {
+          const prev = Array.isArray(mesh.material)
+            ? mesh.material
+            : [mesh.material];
+          prev.forEach((m) => m.dispose());
+        }
+
+        mesh.material = new THREE.MeshStandardMaterial({
+          color: "white",
+          map: texture,
+          roughness: 0.2,
+          metalness: 0.0,
+        });
+      }
+    });
   }, [texture]);
 
-  const handlePointerMove = (e: THREE.Event & PointerEvent) => {
-    if (e.buttons === 1) {
-      paintAt(e);
-    }
-  };
+  // Capture a snapshot at the START of a stroke (pointerdown), not per pixel.
+  const captureStrokeStart = useCallback(() => {
+    if (!canvasRef.current) return;
+    history.current.push(canvasRef.current.canvas.toDataURL());
+    redoStack.current = [];
+  }, [canvasRef]);
 
-  const paintAt = (event: THREE.Event & PointerEvent) => {
-    if (
-      !painting.current ||
-      isSpacePressed ||
-      !canvasRef.current ||
-      !meshRef.current
-    )
-      return;
+  const paintAt = useCallback(
+    (event: PointerEvent) => {
+      if (
+        !painting.current ||
+        isSpacePressed ||
+        !canvasRef.current ||
+        !meshRef.current
+      )
+        return;
 
-    const mouse = new THREE.Vector2();
-    const raycaster = new THREE.Raycaster();
-    const bounds = gl.domElement.getBoundingClientRect();
+      const mouse = new THREE.Vector2();
+      const raycaster = new THREE.Raycaster();
+      const bounds = gl.domElement.getBoundingClientRect();
 
-    mouse.x = ((event.clientX - bounds.left) / bounds.width) * 2 - 1;
-    mouse.y = -((event.clientY - bounds.top) / bounds.height) * 2 + 1;
+      mouse.x = ((event.clientX - bounds.left) / bounds.width) * 2 - 1;
+      mouse.y = -((event.clientY - bounds.top) / bounds.height) * 2 + 1;
 
-    raycaster.setFromCamera(mouse, camera);
-    const intersects = raycaster.intersectObject(meshRef.current, true);
+      raycaster.setFromCamera(mouse, camera);
+      const intersects = raycaster.intersectObject(meshRef.current, true);
 
-    if (intersects.length > 0 && intersects[0].uv) {
-      // Save current state for undo
-      const dataUrl = canvasRef.current.canvas.toDataURL();
-      history.current.push(dataUrl);
-      redoStack.current = []; // clear redo on new paint
+      if (intersects.length > 0 && intersects[0].uv) {
+        const uv = intersects[0].uv;
+        const { canvas: c, ctx, texture: tex } = canvasRef.current;
+        const x = uv.x * c.width;
+        const y = (1 - uv.y) * c.height;
 
-      const uv = intersects[0].uv;
-      const x = uv.x * canvasRef.current.canvas.width;
-      const y = (1 - uv.y) * canvasRef.current.canvas.height;
+        const uvRadius = brushRadius / c.width;
+        const pixelRadius = uvRadius * c.width;
 
-      const uvRadius = brushRadius / canvasRef.current.canvas.width;
-      const pixelRadius = uvRadius * canvasRef.current.canvas.width;
+        ctx.fillStyle = selectedColor;
+        ctx.beginPath();
+        ctx.arc(x, y, pixelRadius, 0, Math.PI * 2);
+        ctx.fill();
+        tex.needsUpdate = true;
 
-      const { ctx, texture } = canvasRef.current;
-      ctx.fillStyle = selectedColor;
-      ctx.beginPath();
-      ctx.arc(x, y, pixelRadius, 0, Math.PI * 2);
-      ctx.fill();
-      texture.needsUpdate = true;
+        // Throttled localStorage save.
+        scheduleSave(c.toDataURL());
+      }
+    },
+    [isSpacePressed, canvasRef, brushRadius, selectedColor, camera, gl]
+  );
 
-      // Save to localStorage
-      localStorage.setItem(STORAGE_KEY, canvasRef.current.canvas.toDataURL());
-    }
-  };
+  const restoreFromDataUrl = useCallback(
+    (dataUrl: string) => {
+      if (!canvasRef.current) return;
+      const { canvas: c, ctx, texture: tex } = canvasRef.current;
+      const img = new Image();
+      img.onload = () => {
+        ctx.clearRect(0, 0, c.width, c.height);
+        ctx.drawImage(img, 0, 0);
+        tex.needsUpdate = true;
+        localStorage.setItem(STORAGE_KEY, c.toDataURL());
+      };
+      img.src = dataUrl;
+    },
+    [canvasRef]
+  );
 
-  const undo = () => {
+  const undo = useCallback(() => {
     if (!canvasRef.current || history.current.length === 0) return;
+    // Push current state onto redo stack before restoring.
+    redoStack.current.push(canvasRef.current.canvas.toDataURL());
+    const dataUrl = history.current.pop()!;
+    restoreFromDataUrl(dataUrl);
+  }, [canvasRef, restoreFromDataUrl]);
 
-    const now = Date.now();
-    if (now - lastUndoTime.current < CLICK_TIMEOUT) {
-      // Increase step count if clicked within timeout
-      undoStepCount.current += 2;
-    } else {
-      // Reset step count if timeout passed
-      undoStepCount.current = 1;
-    }
-    lastUndoTime.current = now;
-
-    // Perform multiple undos based on step count
-    for (let i = 0; i < undoStepCount.current; i++) {
-      if (history.current.length === 0) break;
-      const dataUrl = history.current.pop();
-      if (!dataUrl) break;
-      redoStack.current.push(canvasRef.current.canvas.toDataURL());
-      const img = new Image();
-      img.onload = () => {
-        const { ctx, texture } = canvasRef.current!;
-        ctx.clearRect(0, 0, 1024, 1024);
-        ctx.drawImage(img, 0, 0);
-        texture.needsUpdate = true;
-        localStorage.setItem(
-          STORAGE_KEY,
-          canvasRef.current!.canvas.toDataURL()
-        );
-      };
-      img.src = dataUrl;
-    }
-  };
-
-  const redo = () => {
+  const redo = useCallback(() => {
     if (!canvasRef.current || redoStack.current.length === 0) return;
+    // Push current state onto history before restoring.
+    history.current.push(canvasRef.current.canvas.toDataURL());
+    const dataUrl = redoStack.current.pop()!;
+    restoreFromDataUrl(dataUrl);
+  }, [canvasRef, restoreFromDataUrl]);
 
-    const now = Date.now();
-    if (now - lastRedoTime.current < CLICK_TIMEOUT) {
-      // Increase step count if clicked within timeout
-      redoStepCount.current += 2;
-    } else {
-      // Reset step count if timeout passed
-      redoStepCount.current = 1;
-    }
-    lastRedoTime.current = now;
-
-    // Perform multiple redos based on step count
-    for (let i = 0; i < redoStepCount.current; i++) {
-      if (redoStack.current.length === 0) break;
-      const dataUrl = redoStack.current.pop();
-      if (!dataUrl) break;
-      history.current.push(canvasRef.current.canvas.toDataURL());
-      const img = new Image();
-      img.onload = () => {
-        const { ctx, texture } = canvasRef.current!;
-        ctx.clearRect(0, 0, 1024, 1024);
-        ctx.drawImage(img, 0, 0);
-        texture.needsUpdate = true;
-        localStorage.setItem(
-          STORAGE_KEY,
-          canvasRef.current!.canvas.toDataURL()
-        );
-      };
-      img.src = dataUrl;
-    }
-  };
-
-  // Reset step counts after timeout
-  useEffect(() => {
-    const resetUndoSteps = () => {
-      if (Date.now() - lastUndoTime.current >= CLICK_TIMEOUT) {
-        undoStepCount.current = 1;
-      }
-    };
-
-    const resetRedoSteps = () => {
-      if (Date.now() - lastRedoTime.current >= CLICK_TIMEOUT) {
-        redoStepCount.current = 1;
-      }
-    };
-
-    const interval = setInterval(() => {
-      resetUndoSteps();
-      resetRedoSteps();
-    }, 1000); // Check every second
-
-    return () => clearInterval(interval);
-  }, []);
-
-  // Expose undo/redo functions to parent component
-  useImperativeHandle(ref, () => ({
-    undo,
-    redo,
-  }));
+  useImperativeHandle(ref, () => ({ undo, redo }), [undo, redo]);
 
   return (
     <group
@@ -277,10 +234,15 @@ function PaintableModel(
       onPointerDown={(e) => {
         if (!isSpacePressed) {
           painting.current = true;
+          captureStrokeStart();
           paintAt(e as unknown as PointerEvent);
         }
       }}
-      onPointerMove={(e) => handlePointerMove(e as unknown as PointerEvent)}
+      onPointerMove={(e) => {
+        if (e.buttons === 1) {
+          paintAt(e as unknown as PointerEvent);
+        }
+      }}
       onPointerUp={() => (painting.current = false)}
       onPointerLeave={() => (painting.current = false)}
     >
@@ -289,7 +251,6 @@ function PaintableModel(
   );
 }
 
-// Create a forwardRef wrapper for PaintableModel
 const PaintableModelWithRef = forwardRef(PaintableModel);
 
 function ExportHandler({
@@ -303,16 +264,22 @@ function ExportHandler({
 }) {
   const { gl, scene, camera } = useThree();
 
+  // Stable callback ref so the effect doesn't re-register on every render.
+  const onExportRef = useRef(onExport);
+  useEffect(() => {
+    onExportRef.current = onExport;
+  });
+
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "s") {
         e.preventDefault();
-        onExport(gl, scene, camera);
+        onExportRef.current(gl, scene, camera);
       }
     };
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [gl, scene, camera, onExport]);
+  }, [gl, scene, camera]);
 
   return null;
 }
@@ -329,8 +296,10 @@ export default function PaintingBoard() {
   const canvasRef = useRef<CanvasRefType | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
+  // Track the current object URL so we can revoke it when a new model is loaded.
+  const objectUrlRef = useRef<string | null>(null);
 
-  // Add cursor style based on mode and brush size
+  // Custom brush cursor.
   useEffect(() => {
     const cursorStyle = isSpacePressed
       ? "default"
@@ -343,7 +312,6 @@ export default function PaintingBoard() {
         }' stroke='white' stroke-width='1' fill='none'/%3E%3C/svg%3E") ${brushRadius} ${brushRadius}, auto`;
 
     document.body.style.cursor = cursorStyle;
-
     return () => {
       document.body.style.cursor = "default";
     };
@@ -355,79 +323,96 @@ export default function PaintingBoard() {
     }
   };
 
+  // Keyboard shortcuts for undo/redo.
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
-      if (!isSpacePressed) {
-        if ((e.metaKey || e.ctrlKey) && e.key === "z") {
-          e.preventDefault();
-          if (e.shiftKey) {
-            modelRef.current?.redo();
-          } else {
-            modelRef.current?.undo();
-          }
-        } else if ((e.metaKey || e.ctrlKey) && e.key === "y") {
-          e.preventDefault();
+      if (isSpacePressed) return;
+      if ((e.metaKey || e.ctrlKey) && e.key === "z") {
+        e.preventDefault();
+        if (e.shiftKey) {
           modelRef.current?.redo();
+        } else {
+          modelRef.current?.undo();
         }
+      } else if ((e.metaKey || e.ctrlKey) && e.key === "y") {
+        e.preventDefault();
+        modelRef.current?.redo();
       }
     };
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [isSpacePressed, modelRef]);
+  }, [isSpacePressed]);
 
+  // Space toggles paint/view mode.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.code === "Space") {
-        e.preventDefault(); // Prevent page scroll
-        setIsSpacePressed((prev) => !prev); // Toggle the state
+        e.preventDefault();
+        setIsSpacePressed((prev) => !prev);
       }
     };
     window.addEventListener("keydown", handleKeyDown);
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-    };
+    return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
   const handleFileImport = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
-    // Reset the canvas and storage
+    // Revoke the previous object URL to free memory.
+    if (objectUrlRef.current) {
+      URL.revokeObjectURL(objectUrlRef.current);
+    }
+
+    // Dispose the cached GLTF for the old URL so Three.js doesn't leak it.
+    if (objectUrlRef.current) {
+      useGLTF.clear(objectUrlRef.current);
+    }
+
     localStorage.removeItem(STORAGE_KEY);
     localStorage.removeItem(COLOR_STORAGE_KEY);
 
-    // Create a URL for the file
     const fileUrl = URL.createObjectURL(file);
+    objectUrlRef.current = fileUrl;
     setModelUrl(fileUrl);
 
-    // Reset camera position
     if (controlsRef.current) {
       controlsRef.current.reset();
     }
+
+    // Reset file input so the same file can be re-imported if needed.
+    event.target.value = "";
   };
 
-  const exportImage = (
-    renderer: THREE.WebGLRenderer,
-    scene: THREE.Scene,
-    camera: THREE.Camera
-  ) => {
-    // Render the scene
-    renderer.render(scene, camera);
+  const exportImage = useCallback(
+    (
+      renderer: THREE.WebGLRenderer,
+      scene: THREE.Scene,
+      camera: THREE.Camera
+    ) => {
+      renderer.render(scene, camera);
+      const imageData = renderer.domElement.toDataURL("image/png");
+      const link = document.createElement("a");
+      link.href = imageData;
+      link.download = `miniature-painting-${new Date()
+        .toISOString()
+        .slice(0, 19)
+        .replace(/:/g, "-")}.png`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    },
+    []
+  );
 
-    // Get the image data
-    const imageData = renderer.domElement.toDataURL("image/png");
-
-    // Create download link
-    const link = document.createElement("a");
-    link.href = imageData;
-    link.download = `miniature-painting-${new Date()
-      .toISOString()
-      .slice(0, 19)
-      .replace(/:/g, "-")}.png`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
+  // Trigger export directly without a synthetic keyboard event.
+  const handleExportImage = useCallback(() => {
+    if (!rendererRef.current) return;
+    // Re-use the exportImage function; we need scene + camera from the renderer.
+    // Dispatch the real shortcut so ExportHandler (which has scene/camera) fires it.
+    const ev = new KeyboardEvent("keydown", { key: "s", ctrlKey: true, bubbles: true });
+    window.dispatchEvent(ev);
+  }, []);
 
   return (
     <div className="relative" style={{ width: "100vw", height: "100vh" }}>
@@ -447,10 +432,8 @@ export default function PaintingBoard() {
           gl.setClearColor(0x000000, 0);
         }}
       >
-        {/* Ambient light for base illumination */}
         <ambientLight intensity={0.7} />
 
-        {/* Main directional lights from different angles */}
         <directionalLight
           position={[5, 5, 5]}
           intensity={0.8}
@@ -470,7 +453,6 @@ export default function PaintingBoard() {
           shadow-mapSize={[1024, 1024]}
         />
 
-        {/* Fill lights for better detail visibility */}
         <pointLight position={[-3, -3, -3]} intensity={0.3} />
         <pointLight position={[3, 3, 3]} intensity={0.3} />
         <pointLight position={[0, 0, 5]} intensity={0.2} />
@@ -507,13 +489,7 @@ export default function PaintingBoard() {
         isSpacePressed={isSpacePressed}
         setIsSpacePressed={setIsSpacePressed}
         onResetCamera={resetCamera}
-        onExportImage={() => {
-          const event = new KeyboardEvent("keydown", {
-            key: "s",
-            metaKey: true,
-          });
-          window.dispatchEvent(event);
-        }}
+        onExportImage={handleExportImage}
         onImportModel={() => fileInputRef.current?.click()}
       />
     </div>
