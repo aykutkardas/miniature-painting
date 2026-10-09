@@ -11,9 +11,9 @@ export type ModelSource = {
 };
 
 export const DEFAULT_MODEL: ModelSource = {
-  url: "/models/miniature.glb",
-  name: "Wanderer",
-  storageKey: "model:default:v2",
+  url: "/models/miniature.glb?v=3",
+  name: "Miniature",
+  storageKey: "model:default:v3",
 };
 
 type StudioActions = {
