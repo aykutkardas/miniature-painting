@@ -54,7 +54,6 @@ export function CameraRig() {
       smoothTime={0.18}
       draggingSmoothTime={0.08}
       dollySpeed={0.6}
-      dollyToCursor
       mouseButtons={{
         left: CameraControlsImpl.ACTION.ROTATE,
         middle: CameraControlsImpl.ACTION.DOLLY,
