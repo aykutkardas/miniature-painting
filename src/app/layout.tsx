@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
@@ -13,8 +13,18 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Miniature Painting",
-  description: "Miniature Painting",
+  title: "Miniature Studio — Paint 3D miniatures in your browser",
+  description:
+    "Paint a primed 3D miniature right in the browser. Real brush strokes across the whole model, metallic and gloss finishes, undo history and photo export.",
+};
+
+export const viewport: Viewport = {
+  themeColor: "#121715",
+  colorScheme: "dark",
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
 };
 
 export default function RootLayout({
@@ -23,12 +33,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased select-none`}
-      >
-        {children}
-      </body>
+    <html lang="en" className={`dark bg-background ${geistSans.variable} ${geistMono.variable}`}>
+      <body className="font-sans antialiased">{children}</body>
     </html>
   );
 }
